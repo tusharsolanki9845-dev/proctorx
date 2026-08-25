@@ -44,3 +44,14 @@
 - [x] Exercise `db.consumeAccountToken()` with successful and zero-row update outcomes in a focused data-layer test.
 - [x] Verify the new account-security and report-library flows at a mobile viewport.
 - [x] Document transactional email fallback status until provider credentials are configured.
+- [x] Define a demo paper and an end-to-end integrity-audit matrix covering scoring, reporting, support, alerts, and access control.
+- [x] Simulate camera interruption, face absence, multiple faces, fullscreen exit, and tab visibility changes during a demo attempt.
+- [x] Verify warning thresholds, high-risk escalation, automatic submission, integrity logs, real-time administrator alerts, and report visibility.
+- [x] Test student-versus-administrator authorization boundaries across demo attempts, support, reports, and notifications.
+- [x] Document audit evidence, remedy any verified defects, and save an audit checkpoint.
+- [x] Run every demo cheating signal through the proctoring procedure and verify recorded event timeline persistence.
+- [x] Verify the demo attempt's integrity-threshold submission reason, owner report visibility, and administrator review and alert access.
+- [x] Add a storage-backed demo audit for integrity event records, submission reason, report ownership, and administrator notification access.
+- [x] Add one combined audit test using the real proctoring procedure, real storage, and administrator notification route.
+- [x] Evaluate required external integrations and prefer public/free APIs or documented built-in fallbacks.
+- [x] Document the selected free-service approach and any credentials still needed for production email delivery.
