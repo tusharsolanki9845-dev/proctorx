@@ -1,0 +1,21 @@
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { trpc } from "@/lib/trpc";
+import { Headphones, Send } from "lucide-react";
+import { useEffect, useState } from "react";
+import { io } from "socket.io-client";
+import { toast } from "sonner";
+
+export function SupportChat({ attemptId, isAdmin = false }: { attemptId: number; isAdmin?: boolean }) {
+  const [message, setMessage] = useState("");
+  const utils = trpc.useUtils();
+  const thread = trpc.proctorx.support.list.useQuery({ attemptId });
+  const send = trpc.proctorx.support.send.useMutation({ onSuccess: () => { setMessage(""); thread.refetch(); }, onError: error => toast.error(error.message) });
+  useEffect(() => {
+    const socket = io({ path: "/api/realtime", withCredentials: true });
+    socket.emit("support:join", attemptId);
+    socket.on("support:updated", (event: { attemptId: number }) => { if (event.attemptId === attemptId) void utils.proctorx.support.list.invalidate({ attemptId }); });
+    return () => { socket.disconnect(); };
+  }, [attemptId, utils]);
+  return <div className="hud-panel flex max-h-[440px] min-h-[360px] flex-col overflow-hidden"><div className="flex items-center gap-3 border-b border-cyan-200/15 p-4"><Headphones className="h-5 w-5 text-pink-300" /><div><p className="tech-label">Live technical support</p><p className="mt-1 text-sm font-medium">{isAdmin ? `Candidate: ${thread.data?.attempt.examTitle ?? "Loading…"}` : "Exam support channel"}</p></div><span className="ml-auto h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_12px_#22d3ee]" /></div><div className="flex-1 space-y-3 overflow-y-auto p-4">{thread.isLoading ? <p className="text-xs text-muted-foreground">Connecting to support…</p> : thread.data?.messages.length ? thread.data.messages.map(item => <div key={item.id} className={`max-w-[88%] border p-3 text-xs leading-5 ${item.senderRole === "admin" ? "ml-auto border-cyan-300/30 bg-cyan-300/10 text-cyan-50" : "border-pink-400/25 bg-pink-400/8 text-slate-200"}`}><p className="mb-1 tech-label text-[0.48rem]">{item.senderRole === "admin" ? "Technical support" : item.senderName ?? "Candidate"}</p><p>{item.message}</p><p className="mt-1 text-[0.58rem] text-muted-foreground">{new Date(item.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p></div>) : <p className="rounded border border-cyan-200/15 bg-black/15 p-3 text-xs leading-5 text-muted-foreground">Describe a technical issue, such as camera permission or a page problem. Your message is visible to the administrator and does not change your answers.</p>}</div><div className="border-t border-cyan-200/15 p-3"><Textarea value={message} onChange={event => setMessage(event.target.value)} placeholder={isAdmin ? "Reply with technical guidance…" : "Describe the technical issue…"} className="min-h-16 border-cyan-200/20 bg-black/25 text-xs" /><Button disabled={!message.trim() || send.isPending} onClick={() => send.mutate({ attemptId, message })} className="mt-2 w-full bg-pink-400 text-slate-950 hover:bg-pink-300"><Send className="mr-1 h-4 w-4" />{send.isPending ? "Sending…" : "Send support message"}</Button></div></div>;
+}

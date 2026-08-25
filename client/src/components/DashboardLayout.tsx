@@ -1,14 +1,15 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { startLogin } from "@/const";
-import { BarChart3, ClipboardList, LayoutDashboard, LogOut, ShieldCheck } from "lucide-react";
+import { BarChart3, ClipboardList, Headphones, LayoutDashboard, LogOut, ShieldCheck, UsersRound } from "lucide-react";
 import { useLocation } from "wouter";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Command center", path: "/admin" },
   { icon: ClipboardList, label: "Exam registry", path: "/admin" },
   { icon: BarChart3, label: "Results archive", path: "/admin/results" },
+  { icon: Headphones, label: "Support desk", path: "/admin/support" },
+  { icon: UsersRound, label: "Identity directory", path: "/admin/identities" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -24,7 +25,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <p className="tech-label">Access control</p>
           <h1 className="mt-2 text-3xl font-semibold">Sign in to continue</h1>
           <p className="mt-3 text-sm text-muted-foreground">Administrator controls are available only to approved accounts.</p>
-          <Button onClick={() => startLogin()} className="neon-button mt-7 w-full bg-pink-400 text-slate-950 hover:bg-pink-300">Authenticate</Button>
+          <Button onClick={() => setLocation("/signin")} className="neon-button mt-7 w-full bg-pink-400 text-slate-950 hover:bg-pink-300">Authenticate</Button>
         </div>
       </div>
     );

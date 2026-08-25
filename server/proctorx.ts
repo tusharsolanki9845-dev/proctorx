@@ -1,7 +1,11 @@
 import { TRPCError } from "@trpc/server";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import * as db from "./db";
-import { adminProcedure, protectedProcedure, router } from "./_core/trpc";
+import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { getConfiguredAdminOpenId, hashPassword, verifyConfiguredAdminCredentials, verifyPassword } from "./localAuth";
+import { issueLocalSession } from "./localSession";
+import { notifySupportConversation } from "./supportRealtime";
 import {
   DEFAULT_PROCTORING_CONFIG,
   EVENT_TYPES,
@@ -49,6 +53,33 @@ const examInputSchema = z
   });
 
 export const proctorxRouter = router({
+  credentials: router({
+    signUp: publicProcedure
+      .input(z.object({ fullName: z.string().trim().min(2).max(255), email: z.string().trim().email().max(320), password: z.string().min(10).max(128), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional() }))
+      .mutation(async ({ ctx, input }) => {
+        const email = input.email.toLowerCase();
+        const user = await db.createLocalStudent({ ...input, email, openId: `local:${randomUUID()}`, passwordHash: hashPassword(input.password) });
+        await issueLocalSession(ctx.req, ctx.res, user.id);
+        return { id: user.id, role: "user" as const };
+      }),
+    signIn: publicProcedure
+      .input(z.object({ email: z.string().trim().email().max(320), password: z.string().min(1).max(128) }))
+      .mutation(async ({ ctx, input }) => {
+        const credential = await db.findLocalCredentialByEmail(input.email.toLowerCase());
+        if (!credential || !verifyPassword(input.password, credential.passwordHash)) throw new TRPCError({ code: "UNAUTHORIZED", message: "Email or password is incorrect." });
+        await db.touchUserSignIn(credential.userId);
+        await issueLocalSession(ctx.req, ctx.res, credential.userId);
+        return { id: credential.userId, role: credential.role };
+      }),
+    adminSignIn: publicProcedure
+      .input(z.object({ loginId: z.string().trim().min(1).max(255), password: z.string().min(1).max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!verifyConfiguredAdminCredentials(input.loginId, input.password)) throw new TRPCError({ code: "UNAUTHORIZED", message: "Administrator ID or password is incorrect." });
+        const admin = await db.ensureConfiguredAdmin(getConfiguredAdminOpenId(input.loginId));
+        await issueLocalSession(ctx.req, ctx.res, admin.id);
+        return { id: admin.id, role: "admin" as const };
+      }),
+  }),
   profile: router({
     get: protectedProcedure.query(({ ctx }) => db.getStudentProfile(ctx.user.id)),
     save: protectedProcedure
@@ -118,6 +149,20 @@ export const proctorxRouter = router({
       }),
   }),
 
+  support: router({
+    list: protectedProcedure
+      .input(z.object({ attemptId: z.number().int().positive() }))
+      .query(({ ctx, input }) => db.getSupportMessages(input.attemptId, ctx.user.id, ctx.user.role === "admin")),
+    send: protectedProcedure
+      .input(z.object({ attemptId: z.number().int().positive(), message: z.string().trim().min(1).max(1500) }))
+      .mutation(async ({ ctx, input }) => {
+        const result = await db.sendSupportMessage({ ...input, senderUserId: ctx.user.id, senderRole: ctx.user.role === "admin" ? "admin" : "student" });
+        notifySupportConversation(input.attemptId);
+        return result;
+      }),
+    inbox: adminProcedure.query(() => db.listSupportInbox()),
+  }),
+
   admin: router({
     listExams: adminProcedure.query(() => db.listAdminExams()),
     createExam: adminProcedure
@@ -140,6 +185,10 @@ export const proctorxRouter = router({
         if (!review) throw new TRPCError({ code: "NOT_FOUND", message: "Exam attempt was not found." });
         return review;
       }),
+    listUsers: adminProcedure.query(() => db.listManagedUsers()),
+    updateUser: adminProcedure
+      .input(z.object({ userId: z.number().int().positive(), fullName: z.string().trim().min(2).max(255), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional(), role: z.enum(["user", "admin"]) }))
+      .mutation(({ ctx, input }) => db.updateManagedUser(ctx.user.id, input)),
     resultsExport: adminProcedure.query(() => db.getResultsExport()),
   }),
 });

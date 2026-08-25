@@ -5,13 +5,16 @@ import {
   examAttempts,
   examAuditLogs,
   exams,
+  localCredentials,
   proctoringEvents,
   questions,
   studentProfiles,
+  supportMessages,
   type InsertUser,
   users,
 } from "../drizzle/schema";
 import { calculateExamScore, normalizeProctoringConfig, type AnswerOption } from "../shared/proctoring";
+import { canAccessAttemptReport, canSendSupportMessage } from "../shared/accessControl";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -192,7 +195,7 @@ export async function getStudentAttempt(userId: number, attemptId: number) {
       .orderBy(asc(questions.orderIndex)),
     db.select().from(attemptAnswers).where(eq(attemptAnswers.attemptId, attemptId)),
     db
-      .select({ id: proctoringEvents.id, eventType: proctoringEvents.eventType, severity: proctoringEvents.severity, detectedAt: proctoringEvents.detectedAt })
+      .select({ id: proctoringEvents.id, eventType: proctoringEvents.eventType, severity: proctoringEvents.severity, detectedAt: proctoringEvents.detectedAt, durationMs: proctoringEvents.durationMs })
       .from(proctoringEvents)
       .where(eq(proctoringEvents.attemptId, attemptId))
       .orderBy(desc(proctoringEvents.detectedAt)),
@@ -527,4 +530,164 @@ export async function writeAuditLog(
 ) {
   const db = await requireDb();
   await db.insert(examAuditLogs).values({ actorUserId, action, entityType, entityId, metadata });
+}
+
+export async function createLocalStudent(input: {
+  openId: string;
+  fullName: string;
+  email: string;
+  collegeName?: string | null;
+  rollNumber?: string | null;
+  passwordHash: string;
+}) {
+  const db = await requireDb();
+  const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
+  if (existing[0]) throw new Error("An account already exists for this email address.");
+  const [created] = await db.transaction(async tx => {
+    const [user] = await tx
+      .insert(users)
+      .values({ openId: input.openId, name: input.fullName, email: input.email, loginMethod: "local", role: "user" })
+      .$returningId();
+    await tx.insert(studentProfiles).values({ userId: user!.id, fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null });
+    await tx.insert(localCredentials).values({ userId: user!.id, passwordHash: input.passwordHash });
+    return [user!];
+  });
+  return created!;
+}
+
+export async function findLocalCredentialByEmail(email: string) {
+  const db = await requireDb();
+  const [record] = await db
+    .select({ userId: users.id, passwordHash: localCredentials.passwordHash, role: users.role, email: users.email, name: users.name })
+    .from(users)
+    .innerJoin(localCredentials, eq(localCredentials.userId, users.id))
+    .where(eq(users.email, email))
+    .limit(1);
+  return record ?? null;
+}
+
+export async function getUserById(userId: number) {
+  const db = await requireDb();
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  return user ?? null;
+}
+
+export async function touchUserSignIn(userId: number) {
+  const db = await requireDb();
+  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
+}
+
+export async function ensureConfiguredAdmin(openId: string) {
+  const db = await requireDb();
+  const [existing] = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
+  if (existing) {
+    await db.update(users).set({ role: "admin", loginMethod: "configured-admin", lastSignedIn: new Date() }).where(eq(users.id, existing.id));
+    return (await getUserById(existing.id))!;
+  }
+  const [created] = await db
+    .insert(users)
+    .values({ openId, name: "ProctorX Administrator", email: null, loginMethod: "configured-admin", role: "admin" })
+    .$returningId();
+  return (await getUserById(created!.id))!;
+}
+
+export async function listManagedUsers() {
+  const db = await requireDb();
+  return db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+      loginMethod: users.loginMethod,
+      createdAt: users.createdAt,
+      lastSignedIn: users.lastSignedIn,
+      fullName: studentProfiles.fullName,
+      collegeName: studentProfiles.collegeName,
+      rollNumber: studentProfiles.rollNumber,
+    })
+    .from(users)
+    .leftJoin(studentProfiles, eq(studentProfiles.userId, users.id))
+    .orderBy(desc(users.createdAt));
+}
+
+export async function updateManagedUser(
+  actorUserId: number,
+  input: { userId: number; fullName: string; collegeName?: string | null; rollNumber?: string | null; role: "user" | "admin" }
+) {
+  const db = await requireDb();
+  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.userId)).limit(1);
+  if (!user) throw new Error("User record was not found.");
+  await db.transaction(async tx => {
+    await tx.update(users).set({ name: input.fullName, role: input.role }).where(eq(users.id, input.userId));
+    await tx
+      .insert(studentProfiles)
+      .values({ userId: input.userId, fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null })
+      .onDuplicateKeyUpdate({ set: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null } });
+  });
+  await writeAuditLog(actorUserId, "identity.updated", "user", input.userId, { role: input.role });
+  return getUserById(input.userId);
+}
+
+async function getAttemptOwner(attemptId: number) {
+  const db = await requireDb();
+  const [attempt] = await db
+    .select({ id: examAttempts.id, userId: examAttempts.userId, status: examAttempts.status, examTitle: exams.title })
+    .from(examAttempts)
+    .innerJoin(exams, eq(examAttempts.examId, exams.id))
+    .where(eq(examAttempts.id, attemptId))
+    .limit(1);
+  return attempt ?? null;
+}
+
+export async function sendSupportMessage(input: { attemptId: number; senderUserId: number; senderRole: "student" | "admin"; message: string }) {
+  const db = await requireDb();
+  const attempt = await getAttemptOwner(input.attemptId);
+  if (!attempt) throw new Error("Exam attempt was not found.");
+  if (!canSendSupportMessage({ requesterUserId: input.senderUserId, attemptOwnerUserId: attempt.userId, attemptStatus: attempt.status, senderRole: input.senderRole })) {
+    throw new Error("Support chat is available only during your active exam attempt.");
+  }
+  const [created] = await db.insert(supportMessages).values(input).$returningId();
+  return created!;
+}
+
+export async function getSupportMessages(attemptId: number, requesterUserId: number, isAdmin: boolean) {
+  const db = await requireDb();
+  const attempt = await getAttemptOwner(attemptId);
+  if (!attempt || !canAccessAttemptReport({ requesterUserId, attemptOwnerUserId: attempt.userId, isAdmin })) throw new Error("Support conversation was not found.");
+  if (isAdmin) {
+    await db
+      .update(supportMessages)
+      .set({ readAt: new Date() })
+      .where(and(eq(supportMessages.attemptId, attemptId), eq(supportMessages.senderRole, "student")));
+  }
+  const messages = await db
+    .select({ id: supportMessages.id, senderUserId: supportMessages.senderUserId, senderRole: supportMessages.senderRole, message: supportMessages.message, createdAt: supportMessages.createdAt, readAt: supportMessages.readAt, senderName: users.name })
+    .from(supportMessages)
+    .innerJoin(users, eq(supportMessages.senderUserId, users.id))
+    .where(eq(supportMessages.attemptId, attemptId))
+    .orderBy(asc(supportMessages.createdAt));
+  return { attempt, messages };
+}
+
+export async function listSupportInbox() {
+  const db = await requireDb();
+  return db
+    .select({
+      id: supportMessages.id,
+      attemptId: supportMessages.attemptId,
+      senderRole: supportMessages.senderRole,
+      message: supportMessages.message,
+      createdAt: supportMessages.createdAt,
+      readAt: supportMessages.readAt,
+      examTitle: exams.title,
+      studentName: users.name,
+      studentEmail: users.email,
+    })
+    .from(supportMessages)
+    .innerJoin(examAttempts, eq(supportMessages.attemptId, examAttempts.id))
+    .innerJoin(exams, eq(examAttempts.examId, exams.id))
+    .innerJoin(users, eq(examAttempts.userId, users.id))
+    .orderBy(desc(supportMessages.createdAt))
+    .limit(100);
 }

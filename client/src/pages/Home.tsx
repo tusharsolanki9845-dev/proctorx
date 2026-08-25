@@ -1,6 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { startLogin } from "@/const";
 import { ArrowRight, BrainCircuit, CheckCircle2, Eye, FileCheck2, LockKeyhole, ScanFace, ShieldCheck, TimerReset } from "lucide-react";
 import { useLocation } from "wouter";
 
@@ -20,7 +19,7 @@ export default function Home() {
       <header className="container relative z-10 flex items-center justify-between py-5">
         <button onClick={() => setLocation("/")} className="flex items-center gap-3 text-left"><span className="grid h-9 w-9 place-items-center border border-cyan-300/75 bg-cyan-300/10 font-display text-xs font-bold text-cyan-100 shadow-[0_0_26px_rgba(34,211,238,.35)]">PX</span><span><span className="font-display text-lg font-bold tracking-tight">PROCTOR<span className="text-pink-400">X</span></span><span className="ml-2 hidden tech-label text-[0.56rem] sm:inline">Assessment OS</span></span></button>
         <div className="flex items-center gap-3">
-          {isAuthenticated ? <><Button variant="ghost" onClick={logout} className="hidden text-muted-foreground hover:text-pink-300 sm:inline-flex">Sign out</Button><Button onClick={() => setLocation(destination)} className="neon-button bg-pink-400 text-slate-950 hover:bg-pink-300">Open workspace <ArrowRight className="ml-1 h-4 w-4" /></Button></> : <Button onClick={() => startLogin()} className="neon-button bg-pink-400 text-slate-950 hover:bg-pink-300">Sign in <ArrowRight className="ml-1 h-4 w-4" /></Button>}
+          {isAuthenticated ? <><Button variant="ghost" onClick={logout} className="hidden text-muted-foreground hover:text-pink-300 sm:inline-flex">Sign out</Button><Button onClick={() => setLocation(destination)} className="neon-button bg-pink-400 text-slate-950 hover:bg-pink-300">Open workspace <ArrowRight className="ml-1 h-4 w-4" /></Button></> : <Button onClick={() => setLocation("/signin")} className="neon-button bg-pink-400 text-slate-950 hover:bg-pink-300">Sign in <ArrowRight className="ml-1 h-4 w-4" /></Button>}
         </div>
       </header>
 
@@ -30,7 +29,7 @@ export default function Home() {
             <div className="mb-6 flex items-center gap-2"><span className="h-2 w-2 bg-cyan-300 shadow-[0_0_16px_#22d3ee] signal-pulse" /><span className="tech-label">Integrity with human context</span></div>
             <h1 className="font-display text-5xl font-bold leading-[.96] tracking-[-0.06em] text-white sm:text-6xl xl:text-7xl">High-trust exams for a <span className="neon-text text-cyan-200">high-signal</span> world.</h1>
             <p className="mt-7 max-w-xl text-base leading-7 text-slate-300 sm:text-lg">ProctorX makes online assessments structured, accountable, and transparent. It pairs focused exam delivery with privacy-conscious browser signals and an audit-ready review trail.</p>
-            <div className="mt-9 flex flex-col gap-3 sm:flex-row"><Button size="lg" onClick={() => isAuthenticated ? setLocation(destination) : startLogin()} className="neon-button h-12 bg-pink-400 px-6 text-slate-950 hover:bg-pink-300">{isAuthenticated ? "Enter your workspace" : "Start secure sign in"}<ArrowRight className="ml-2 h-4 w-4" /></Button><Button size="lg" variant="outline" onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })} className="h-12 border-cyan-200/30 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10 hover:text-cyan-50">Explore the system</Button></div>
+            <div className="mt-9 flex flex-col gap-3 sm:flex-row"><Button size="lg" onClick={() => isAuthenticated ? setLocation(destination) : setLocation("/signin")} className="neon-button h-12 bg-pink-400 px-6 text-slate-950 hover:bg-pink-300">{isAuthenticated ? "Enter your workspace" : "Start secure sign in"}<ArrowRight className="ml-2 h-4 w-4" /></Button><Button size="lg" variant="outline" onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })} className="h-12 border-cyan-200/30 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10 hover:text-cyan-50">Explore the system</Button></div>
             <div className="mt-10 flex flex-wrap gap-x-6 gap-y-3 text-xs text-slate-400"><span className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-cyan-300" />No continuous recording in MVP</span><span className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-cyan-300" />Human review remains essential</span></div>
           </div>
 

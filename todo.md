@@ -18,3 +18,15 @@
 - [x] Expose and persist per-exam proctoring thresholds in the administrator workflow.
 - [x] Expand the candidate device check with camera, fullscreen, backgrounding, and readiness feedback.
 - [x] Add start and end scheduling controls to the administrator assessment workflow and persist them through create/update procedures.
+- [x] Add secure real-time technical-support chat for students during active exam attempts and an administrator support inbox.
+- [x] Add authorization-safe PDF exports for detailed exam attempt reports and integrity-event timelines.
+- [x] Add an administrator identity-management screen for student profiles and explicit role promotion or demotion.
+- [x] Write and run tests for support-message access, PDF report authorization, and administrator identity controls.
+- [x] Verify the new responsive workflows, inspect runtime logs, and save an enhancement checkpoint.
+- [x] Add secure student email/password sign-up and sign-in with hashed credentials and profile initialization.
+- [x] Add a dedicated administrator ID/password sign-in using protected project configuration and administrator-only sessions.
+- [x] Migrate existing role checks and session handling without exposing credentials or weakening administrator protections.
+- [x] Test student and administrator credential access, invalid-password rejection, and role isolation.
+- [x] Replace support-chat polling with a true real-time delivery channel while retaining authorization checks and persistence.
+- [x] Add procedure-level tests for credential sign-in, report authorization, and administrator identity role changes.
+- [x] Add successful administrator identity-update tests and procedure-level support and report access tests.

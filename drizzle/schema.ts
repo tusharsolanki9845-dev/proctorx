@@ -21,7 +21,7 @@ export const users = mysqlTable("users", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
-});
+}, table => [uniqueIndex("users_email_unique").on(table.email)]);
 
 export const studentProfiles = mysqlTable(
   "studentProfiles",
@@ -37,6 +37,20 @@ export const studentProfiles = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => [uniqueIndex("studentProfiles_userId_unique").on(table.userId)]
+);
+
+export const localCredentials = mysqlTable(
+  "localCredentials",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  table => [uniqueIndex("localCredentials_userId_unique").on(table.userId)]
 );
 
 export const exams = mysqlTable(
@@ -149,6 +163,24 @@ export const proctoringEvents = mysqlTable(
     resolvedAt: timestamp("resolvedAt"),
   },
   table => [index("proctoringEvents_attempt_time_idx").on(table.attemptId, table.detectedAt)]
+);
+
+export const supportMessages = mysqlTable(
+  "supportMessages",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    attemptId: int("attemptId")
+      .notNull()
+      .references(() => examAttempts.id, { onDelete: "cascade" }),
+    senderUserId: int("senderUserId")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    senderRole: mysqlEnum("senderRole", ["student", "admin"]).notNull(),
+    message: text("message").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    readAt: timestamp("readAt"),
+  },
+  table => [index("supportMessages_attempt_time_idx").on(table.attemptId, table.createdAt)]
 );
 
 export const examAuditLogs = mysqlTable(
