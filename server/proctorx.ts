@@ -5,7 +5,9 @@ import * as db from "./db";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { getConfiguredAdminOpenId, hashPassword, verifyConfiguredAdminCredentials, verifyPassword } from "./localAuth";
 import { issueLocalSession } from "./localSession";
-import { notifySupportConversation } from "./supportRealtime";
+import { notifyAdministrators, notifySupportConversation } from "./supportRealtime";
+import { createAccountTokenValue, getTokenExpiry, hashAccountToken } from "./accountSecurity";
+import { deliverAccountLink } from "./transactionalEmail";
 import {
   DEFAULT_PROCTORING_CONFIG,
   EVENT_TYPES,
@@ -33,6 +35,19 @@ const questionInputSchema = z.object({
   points: z.number().int().min(1).max(100).default(1),
 });
 
+async function sendAccountLink(input: { email: string; userId: number; purpose: "verify_email" | "reset_password"; origin: string }) {
+  const token = createAccountTokenValue();
+  await db.createAccountToken(input.userId, input.purpose, hashAccountToken(token), getTokenExpiry(input.purpose));
+  const path = input.purpose === "verify_email" ? "/verify-email" : "/reset-password";
+  return deliverAccountLink({
+    to: input.email,
+    subject: input.purpose === "verify_email" ? "Verify your ProctorX email" : "Reset your ProctorX password",
+    heading: input.purpose === "verify_email" ? "Verify your account" : "Reset your password",
+    description: input.purpose === "verify_email" ? "Confirm your email address to activate your ProctorX student account." : "Choose a new password for your ProctorX account.",
+    link: `${input.origin}${path}?token=${encodeURIComponent(token)}`,
+  });
+}
+
 const examInputSchema = z
   .object({
     title: z.string().trim().min(3).max(255),
@@ -55,18 +70,19 @@ const examInputSchema = z
 export const proctorxRouter = router({
   credentials: router({
     signUp: publicProcedure
-      .input(z.object({ fullName: z.string().trim().min(2).max(255), email: z.string().trim().email().max(320), password: z.string().min(10).max(128), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional() }))
+      .input(z.object({ fullName: z.string().trim().min(2).max(255), email: z.string().trim().email().max(320), password: z.string().min(10).max(128), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional(), origin: z.string().url() }))
       .mutation(async ({ ctx, input }) => {
         const email = input.email.toLowerCase();
         const user = await db.createLocalStudent({ ...input, email, openId: `local:${randomUUID()}`, passwordHash: hashPassword(input.password) });
-        await issueLocalSession(ctx.req, ctx.res, user.id);
-        return { id: user.id, role: "user" as const };
+        const verificationDelivery = await sendAccountLink({ email, userId: user.id, purpose: "verify_email", origin: input.origin });
+        return { id: user.id, verificationDelivery };
       }),
     signIn: publicProcedure
       .input(z.object({ email: z.string().trim().email().max(320), password: z.string().min(1).max(128) }))
       .mutation(async ({ ctx, input }) => {
         const credential = await db.findLocalCredentialByEmail(input.email.toLowerCase());
         if (!credential || !verifyPassword(input.password, credential.passwordHash)) throw new TRPCError({ code: "UNAUTHORIZED", message: "Email or password is incorrect." });
+        if (!credential.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "Verify your email before signing in." });
         await db.touchUserSignIn(credential.userId);
         await issueLocalSession(ctx.req, ctx.res, credential.userId);
         return { id: credential.userId, role: credential.role };
@@ -78,6 +94,37 @@ export const proctorxRouter = router({
         const admin = await db.ensureConfiguredAdmin(getConfiguredAdminOpenId(input.loginId));
         await issueLocalSession(ctx.req, ctx.res, admin.id);
         return { id: admin.id, role: "admin" as const };
+      }),
+    requestVerification: publicProcedure
+      .input(z.object({ email: z.string().trim().email().max(320), origin: z.string().url() }))
+      .mutation(async ({ input }) => {
+        const account = await db.findLocalAccountByEmail(input.email.toLowerCase());
+        if (!account || !account.email || account.emailVerifiedAt) return { accepted: true as const, delivery: { mode: "sent" as const } };
+        return { accepted: true as const, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "verify_email", origin: input.origin }) };
+      }),
+    verifyEmail: publicProcedure
+      .input(z.object({ token: z.string().min(32).max(256) }))
+      .mutation(async ({ input }) => {
+        const token = await db.consumeAccountToken(hashAccountToken(input.token), "verify_email");
+        if (!token) throw new TRPCError({ code: "BAD_REQUEST", message: "This verification link is invalid, expired, or has already been used." });
+        await db.markEmailVerified(token.userId);
+        return { verified: true as const };
+      }),
+    requestPasswordReset: publicProcedure
+      .input(z.object({ email: z.string().trim().email().max(320), origin: z.string().url() }))
+      .mutation(async ({ input }) => {
+        const account = await db.findLocalAccountByEmail(input.email.toLowerCase());
+        if (!account || !account.email) return { accepted: true as const, delivery: { mode: "sent" as const } };
+        return { accepted: true as const, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "reset_password", origin: input.origin }) };
+      }),
+    resetPassword: publicProcedure
+      .input(z.object({ token: z.string().min(32).max(256), password: z.string().min(10).max(128) }))
+      .mutation(async ({ ctx, input }) => {
+        const token = await db.consumeAccountToken(hashAccountToken(input.token), "reset_password");
+        if (!token) throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link is invalid, expired, or has already been used." });
+        await db.replaceLocalPassword(token.userId, hashPassword(input.password));
+        await issueLocalSession(ctx.req, ctx.res, token.userId);
+        return { reset: true as const };
       }),
   }),
   profile: router({
@@ -142,6 +189,10 @@ export const proctorxRouter = router({
         const outcome = await db.recordProctoringEvent(ctx.user.id, input);
         const escalation = getIntegrityEscalation(outcome.eventCount, normalizeProctoringConfig(outcome.proctoringConfig));
         if (escalation.shouldAutoSubmit) {
+          await db.createAdminNotification({ type: "high_risk_integrity", title: "High-risk integrity threshold", body: `Attempt #${input.attemptId} reached its configured automatic-submission threshold.`, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
+          notifyAdministrators();
+        }
+        if (escalation.shouldAutoSubmit) {
           const result = await db.submitExamAttempt(ctx.user.id, input.attemptId, "integrity_threshold");
           return { ...escalation, submitted: true, result };
         }
@@ -158,9 +209,18 @@ export const proctorxRouter = router({
       .mutation(async ({ ctx, input }) => {
         const result = await db.sendSupportMessage({ ...input, senderUserId: ctx.user.id, senderRole: ctx.user.role === "admin" ? "admin" : "student" });
         notifySupportConversation(input.attemptId);
+        if (ctx.user.role !== "admin") {
+          await db.createAdminNotification({ type: "support_message", title: "New technical support request", body: `A student sent a technical support message for attempt #${input.attemptId}.`, destination: "/admin/support", relatedAttemptId: input.attemptId });
+          notifyAdministrators();
+        }
         return result;
       }),
     inbox: adminProcedure.query(() => db.listSupportInbox()),
+  }),
+
+  notifications: router({
+    list: adminProcedure.query(() => db.listAdminNotifications()),
+    markRead: adminProcedure.input(z.object({ notificationId: z.number().int().positive() })).mutation(({ input }) => db.markAdminNotificationRead(input.notificationId)),
   }),
 
   admin: router({

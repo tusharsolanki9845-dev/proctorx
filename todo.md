@@ -30,3 +30,17 @@
 - [x] Replace support-chat polling with a true real-time delivery channel while retaining authorization checks and persistence.
 - [x] Add procedure-level tests for credential sign-in, report authorization, and administrator identity role changes.
 - [x] Add successful administrator identity-update tests and procedure-level support and report access tests.
+- [x] Add a student dashboard report library for past attempts and authorized PDF downloads.
+- [x] Add email-verification tokens, verified-account enforcement, and secure password-reset tokens with expiration and one-time use.
+- [x] Add student interfaces for requesting verification and password-reset emails, verifying accounts, and choosing a new password.
+- [x] Add real-time administrator notifications for support messages and high-risk integrity events, including read state and destination links.
+- [x] Add tests for report ownership, email-token expiry and single use, reset-password safety, and administrator notification access.
+- [x] Verify responsive workflows, fallback-only email status, real-time notifications, and save an enhancement checkpoint.
+- [x] Save a post-enhancement checkpoint for the account-security, report-library, and administrator-notification release.
+- [x] Provide a safe development-only verification and reset-link preview while requiring transactional email configuration for production delivery.
+- [x] Harden account-token consumption with an atomic update-result check and test repeat-token rejection.
+- [x] Add procedure-level repeat-token rejection and cross-student report-access denial tests.
+- [x] Add a data-layer test for actual account-token consume result handling.
+- [x] Exercise `db.consumeAccountToken()` with successful and zero-row update outcomes in a focused data-layer test.
+- [x] Verify the new account-security and report-library flows at a mobile viewport.
+- [x] Document transactional email fallback status until provider credentials are configured.

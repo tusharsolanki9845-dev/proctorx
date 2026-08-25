@@ -16,6 +16,7 @@ export const users = mysqlTable("users", {
   openId: varchar("openId", { length: 64 }).notNull().unique(),
   name: text("name"),
   email: varchar("email", { length: 320 }),
+  emailVerifiedAt: timestamp("emailVerifiedAt"),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -51,6 +52,20 @@ export const localCredentials = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   table => [uniqueIndex("localCredentials_userId_unique").on(table.userId)]
+);
+
+export const accountTokens = mysqlTable(
+  "accountTokens",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("tokenHash", { length: 128 }).notNull(),
+    purpose: mysqlEnum("purpose", ["verify_email", "reset_password"]).notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  table => [uniqueIndex("accountTokens_hash_unique").on(table.tokenHash), index("accountTokens_user_purpose_idx").on(table.userId, table.purpose, table.expiresAt)]
 );
 
 export const exams = mysqlTable(
@@ -181,6 +196,21 @@ export const supportMessages = mysqlTable(
     readAt: timestamp("readAt"),
   },
   table => [index("supportMessages_attempt_time_idx").on(table.attemptId, table.createdAt)]
+);
+
+export const adminNotifications = mysqlTable(
+  "adminNotifications",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    type: mysqlEnum("type", ["support_message", "high_risk_integrity"]).notNull(),
+    title: varchar("title", { length: 255 }).notNull(),
+    body: text("body").notNull(),
+    destination: varchar("destination", { length: 512 }).notNull(),
+    relatedAttemptId: int("relatedAttemptId").references(() => examAttempts.id, { onDelete: "cascade" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    readAt: timestamp("readAt"),
+  },
+  table => [index("adminNotifications_read_time_idx").on(table.readAt, table.createdAt)]
 );
 
 export const examAuditLogs = mysqlTable(

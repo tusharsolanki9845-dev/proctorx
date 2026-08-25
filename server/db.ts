@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
+  accountTokens,
+  adminNotifications,
   attemptAnswers,
   examAttempts,
   examAuditLogs,
@@ -15,9 +17,15 @@ import {
 } from "../drizzle/schema";
 import { calculateExamScore, normalizeProctoringConfig, type AnswerOption } from "../shared/proctoring";
 import { canAccessAttemptReport, canSendSupportMessage } from "../shared/accessControl";
+import { didConsumeTokenExactlyOnce, getAffectedRowCount } from "./accountSecurity";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+
+/** Test-only seam for exercising persistence helpers without a live database. */
+export function __setDbForTests(database: unknown) {
+  _db = database as ReturnType<typeof drizzle> | null;
+}
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -558,12 +566,48 @@ export async function createLocalStudent(input: {
 export async function findLocalCredentialByEmail(email: string) {
   const db = await requireDb();
   const [record] = await db
-    .select({ userId: users.id, passwordHash: localCredentials.passwordHash, role: users.role, email: users.email, name: users.name })
+    .select({ userId: users.id, passwordHash: localCredentials.passwordHash, role: users.role, email: users.email, name: users.name, emailVerifiedAt: users.emailVerifiedAt })
     .from(users)
     .innerJoin(localCredentials, eq(localCredentials.userId, users.id))
     .where(eq(users.email, email))
     .limit(1);
   return record ?? null;
+}
+
+export async function findLocalAccountByEmail(email: string) {
+  const db = await requireDb();
+  const [account] = await db
+    .select({ userId: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt, fullName: users.name })
+    .from(users)
+    .innerJoin(localCredentials, eq(localCredentials.userId, users.id))
+    .where(eq(users.email, email))
+    .limit(1);
+  return account ?? null;
+}
+
+export async function createAccountToken(userId: number, purpose: "verify_email" | "reset_password", tokenHash: string, expiresAt: Date) {
+  const db = await requireDb();
+  const [created] = await db.insert(accountTokens).values({ userId, purpose, tokenHash, expiresAt }).$returningId();
+  return created!;
+}
+
+export async function consumeAccountToken(tokenHash: string, purpose: "verify_email" | "reset_password") {
+  const db = await requireDb();
+  const [token] = await db.select().from(accountTokens).where(and(eq(accountTokens.tokenHash, tokenHash), eq(accountTokens.purpose, purpose))).limit(1);
+  if (!token || token.consumedAt || token.expiresAt <= new Date()) return null;
+  const result = await db.update(accountTokens).set({ consumedAt: new Date() }).where(and(eq(accountTokens.id, token.id), sql`${accountTokens.consumedAt} is null`, sql`${accountTokens.expiresAt} > now()`));
+  if (!didConsumeTokenExactlyOnce(getAffectedRowCount(result))) return null;
+  return token;
+}
+
+export async function markEmailVerified(userId: number) {
+  const db = await requireDb();
+  await db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, userId));
+}
+
+export async function replaceLocalPassword(userId: number, passwordHash: string) {
+  const db = await requireDb();
+  await db.update(localCredentials).set({ passwordHash }).where(eq(localCredentials.userId, userId));
 }
 
 export async function getUserById(userId: number) {
@@ -690,4 +734,20 @@ export async function listSupportInbox() {
     .innerJoin(users, eq(examAttempts.userId, users.id))
     .orderBy(desc(supportMessages.createdAt))
     .limit(100);
+}
+
+export async function createAdminNotification(input: { type: "support_message" | "high_risk_integrity"; title: string; body: string; destination: string; relatedAttemptId?: number | null }) {
+  const db = await requireDb();
+  const [created] = await db.insert(adminNotifications).values({ ...input, relatedAttemptId: input.relatedAttemptId ?? null }).$returningId();
+  return created!;
+}
+
+export async function listAdminNotifications() {
+  const db = await requireDb();
+  return db.select().from(adminNotifications).orderBy(desc(adminNotifications.createdAt)).limit(80);
+}
+
+export async function markAdminNotificationRead(notificationId: number) {
+  const db = await requireDb();
+  await db.update(adminNotifications).set({ readAt: new Date() }).where(eq(adminNotifications.id, notificationId));
 }
