@@ -1,0 +1,11 @@
+{
+  "name": "ProctorX AI Exam Platform",
+  "short_name": "ProctorX",
+  "description": "Secure, transparent online assessment with privacy-conscious integrity signals.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05060b",
+  "theme_color": "#05060b",
+  "orientation": "portrait-primary",
+  "categories": ["education", "productivity"]
+}

@@ -1,0 +1,90 @@
+import { useAuth } from "@/_core/hooks/useAuth";
+import DashboardLayout from "@/components/DashboardLayout";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { trpc } from "@/lib/trpc";
+import { Download, LockKeyhole, Pencil, Plus, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { useLocation } from "wouter";
+
+type AnswerOption = "A" | "B" | "C" | "D";
+type QuestionDraft = { prompt: string; optionA: string; optionB: string; optionC: string; optionD: string; correctOption: AnswerOption; points: number };
+type ExamStatus = "draft" | "scheduled" | "live" | "closed" | "archived";
+const blankQuestion: QuestionDraft = { prompt: "", optionA: "", optionB: "", optionC: "", optionD: "", correctOption: "A", points: 1 };
+const defaultConfig = { faceAbsentThresholdSeconds: 3, multipleFaceThresholdSeconds: 3, warningEventCount: 2, autoSubmitEventCount: 5 };
+
+function formatDate(value: Date | null) { return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "Unscheduled"; }
+function toDateTimeInput(value: Date | null) { return value ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""; }
+
+export default function AdminWorkspace() {
+  const { user } = useAuth();
+  const [, setLocation] = useLocation();
+  const isAdmin = user?.role === "admin";
+  const exams = trpc.proctorx.admin.listExams.useQuery(undefined, { enabled: isAdmin });
+  const results = trpc.proctorx.admin.resultsExport.useQuery(undefined, { enabled: isAdmin });
+  const [showForm, setShowForm] = useState(false);
+  const [editingExamId, setEditingExamId] = useState<number | null>(null);
+  const selectedExam = trpc.proctorx.admin.getExam.useQuery({ examId: editingExamId ?? 0 }, { enabled: isAdmin && editingExamId !== null });
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [minutes, setMinutes] = useState("30");
+  const [status, setStatus] = useState<ExamStatus>("draft");
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+  const [maxAttempts, setMaxAttempts] = useState("1");
+  const [shuffleQuestions, setShuffleQuestions] = useState(false);
+  const [releaseResultsImmediately, setReleaseResultsImmediately] = useState(true);
+  const [config, setConfig] = useState(defaultConfig);
+  const [questions, setQuestions] = useState<QuestionDraft[]>([blankQuestion]);
+
+  const resetForm = () => {
+    setEditingExamId(null); setTitle(""); setDescription(""); setMinutes("30"); setStatus("draft"); setStartsAt(""); setEndsAt(""); setMaxAttempts("1");
+    setShuffleQuestions(false); setReleaseResultsImmediately(true); setConfig(defaultConfig); setQuestions([blankQuestion]);
+  };
+  const afterSave = (message: string) => { toast.success(message); exams.refetch(); setShowForm(false); resetForm(); };
+  const create = trpc.proctorx.admin.createExam.useMutation({ onSuccess: () => afterSave("Assessment created in the registry."), onError: error => toast.error(error.message) });
+  const update = trpc.proctorx.admin.updateExam.useMutation({ onSuccess: () => afterSave("Assessment settings and questions were updated."), onError: error => toast.error(error.message) });
+
+  useEffect(() => {
+    const data = selectedExam.data;
+    if (!data) return;
+    const savedConfig = data.exam.proctoringConfig as Partial<typeof defaultConfig> | null;
+    setTitle(data.exam.title); setDescription(data.exam.description ?? ""); setMinutes(String(Math.round(data.exam.durationSeconds / 60)));
+    setStatus(data.exam.status); setStartsAt(toDateTimeInput(data.exam.startsAt)); setEndsAt(toDateTimeInput(data.exam.endsAt)); setMaxAttempts(String(data.exam.maxAttempts)); setShuffleQuestions(Boolean(data.exam.shuffleQuestions));
+    setReleaseResultsImmediately(Boolean(data.exam.releaseResultsImmediately)); setConfig({ ...defaultConfig, ...savedConfig });
+    setQuestions(data.questions.map(question => ({ prompt: question.prompt, optionA: question.optionA, optionB: question.optionB, optionC: question.optionC, optionD: question.optionD, correctOption: question.correctOption as AnswerOption, points: question.points })));
+  }, [selectedExam.data]);
+
+  const payload = () => ({ title, description: description || null, durationSeconds: Number(minutes) * 60, startsAt: startsAt ? new Date(startsAt) : null, endsAt: endsAt ? new Date(endsAt) : null, status, maxAttempts: Number(maxAttempts) || 1, shuffleQuestions, releaseResultsImmediately, proctoringConfig: config, questions });
+  const canSave = useMemo(() => title.trim().length >= 3 && Number(minutes) >= 1 && questions.every(question => question.prompt.trim() && question.optionA.trim() && question.optionB.trim() && question.optionC.trim() && question.optionD.trim()), [minutes, questions, title]);
+  const isSaving = create.isPending || update.isPending;
+  const saveExam = () => { if (editingExamId) update.mutate({ examId: editingExamId, updates: payload() }); else create.mutate(payload()); };
+  const openNew = () => { resetForm(); setShowForm(true); };
+  const openEdit = (examId: number) => { setEditingExamId(examId); setShowForm(true); };
+  const exportCsv = () => { const rows = results.data ?? []; const header = ["Attempt ID", "Exam", "Student", "Email", "Score", "Maximum score", "Status", "Submission reason", "Integrity score", "Submitted at"]; const content = [header, ...rows.map(row => [row.attemptId, row.examTitle, row.studentName ?? "", row.studentEmail ?? "", row.score ?? "", row.maxScore ?? "", row.status, row.submissionReason ?? "", row.integrityRiskScore, row.submittedAt?.toISOString?.() ?? ""])].map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n"); const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "proctorx-results.csv"; anchor.click(); URL.revokeObjectURL(url); };
+
+  if (!isAdmin) return <DashboardLayout><div className="grid min-h-[70vh] place-items-center"><div className="hud-panel max-w-lg p-8 text-center"><LockKeyhole className="mx-auto h-9 w-9 text-pink-300" /><p className="tech-label mt-5">Restricted terminal</p><h1 className="mt-2 font-display text-3xl font-bold">Administrator access required</h1><p className="mt-3 text-sm leading-6 text-muted-foreground">This workspace is restricted to the project owner or accounts promoted to the administrator role.</p><Button onClick={() => setLocation("/dashboard")} className="mt-7 bg-cyan-300 text-slate-950 hover:bg-cyan-200">Go to candidate workspace</Button></div></div></DashboardLayout>;
+
+  return <DashboardLayout>
+    <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="tech-label">Administrator / command center</p><h1 className="mt-2 font-display text-3xl font-bold tracking-tight sm:text-4xl">Assessment control plane</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">Create timed assessments, control their integrity settings, review end-to-end records, and export authorized outcomes.</p></div><Button onClick={showForm ? () => { setShowForm(false); resetForm(); } : openNew} className="neon-button bg-pink-400 text-slate-950 hover:bg-pink-300"><Plus className="mr-1 h-4 w-4" />{showForm ? "Close editor" : "New assessment"}</Button></div>
+
+    {showForm && <section className="hud-panel mt-8 p-5 sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="tech-label">{editingExamId ? "Assessment editor" : "Exam builder"}</p><h2 className="mt-1 font-display text-xl font-semibold">{editingExamId ? "Manage assessment content and settings" : "Create a timed MCQ assessment"}</h2><p className="mt-2 text-xs leading-5 text-muted-foreground">Question and configuration edits are locked automatically once candidates have recorded attempts.</p></div><ShieldAlert className="h-5 w-5 text-pink-300" /></div>
+      {editingExamId && selectedExam.isLoading ? <p className="mt-8 text-sm text-muted-foreground">Loading current assessment settings…</p> : <>
+        <div className="mt-6 grid gap-4 md:grid-cols-2"><Input value={title} onChange={event => setTitle(event.target.value)} placeholder="Assessment title" className="border-cyan-200/20 bg-black/20" /><Input type="number" min="1" value={minutes} onChange={event => setMinutes(event.target.value)} placeholder="Duration (minutes)" className="border-cyan-200/20 bg-black/20" /><Textarea value={description} onChange={event => setDescription(event.target.value)} placeholder="Brief candidate-facing instructions" className="min-h-24 border-cyan-200/20 bg-black/20 md:col-span-2" /><label className="grid gap-1 text-xs text-muted-foreground">Assessment state<select value={status} onChange={event => setStatus(event.target.value as ExamStatus)} className="h-10 border border-cyan-200/20 bg-black/20 px-3 text-sm text-foreground"><option value="draft">Draft</option><option value="live">Live now</option><option value="scheduled">Scheduled</option><option value="closed">Closed</option><option value="archived">Archived</option></select></label><label className="grid gap-1 text-xs text-muted-foreground">Maximum attempts<Input type="number" min="1" max="10" value={maxAttempts} onChange={event => setMaxAttempts(event.target.value)} className="border-cyan-200/20 bg-black/20" /></label><label className="grid gap-1 text-xs text-muted-foreground">Start time (optional)<Input type="datetime-local" value={startsAt} onChange={event => setStartsAt(event.target.value)} className="border-cyan-200/20 bg-black/20" /></label><label className="grid gap-1 text-xs text-muted-foreground">End time (optional)<Input type="datetime-local" value={endsAt} onChange={event => setEndsAt(event.target.value)} className="border-cyan-200/20 bg-black/20" /></label></div>
+        <div className="mt-5 grid gap-3 border-y border-cyan-200/10 py-5 md:grid-cols-2"><label className="flex items-center gap-3 border border-cyan-200/15 bg-black/15 p-3 text-sm"><input checked={shuffleQuestions} onChange={event => setShuffleQuestions(event.target.checked)} type="checkbox" className="accent-cyan-300" />Shuffle question order for each attempt</label><label className="flex items-center gap-3 border border-cyan-200/15 bg-black/15 p-3 text-sm"><input checked={releaseResultsImmediately} onChange={event => setReleaseResultsImmediately(event.target.checked)} type="checkbox" className="accent-cyan-300" />Release score immediately after submission</label></div>
+        <div className="mt-6"><div><p className="tech-label">Per-exam integrity thresholds</p><p className="mt-1 text-sm text-muted-foreground">These controls define sustained-signal and escalation boundaries for this specific assessment.</p></div><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><ThresholdField label="Face absent (seconds)" value={config.faceAbsentThresholdSeconds} onChange={value => setConfig(current => ({ ...current, faceAbsentThresholdSeconds: value }))} /><ThresholdField label="Multiple faces (seconds)" value={config.multipleFaceThresholdSeconds} onChange={value => setConfig(current => ({ ...current, multipleFaceThresholdSeconds: value }))} /><ThresholdField label="Warning event count" value={config.warningEventCount} onChange={value => setConfig(current => ({ ...current, warningEventCount: value }))} /><ThresholdField label="Auto-submit event count" value={config.autoSubmitEventCount} onChange={value => setConfig(current => ({ ...current, autoSubmitEventCount: value }))} /></div></div>
+        <div className="mt-7"><p className="tech-label">Question bank</p><div className="mt-4 space-y-4">{questions.map((question, index) => <QuestionEditor key={index} question={question} index={index} removable={questions.length > 1} onChange={next => setQuestions(list => list.map((item, itemIndex) => itemIndex === index ? next : item))} onRemove={() => setQuestions(list => list.filter((_, itemIndex) => itemIndex !== index))} />)}</div></div>
+        <div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row"><Button variant="outline" onClick={() => setQuestions(list => [...list, { ...blankQuestion }])} className="border-cyan-200/25 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10">Add question</Button><Button disabled={!canSave || isSaving} onClick={saveExam} className="bg-cyan-300 text-slate-950 hover:bg-cyan-200">{isSaving ? "Saving…" : editingExamId ? "Save assessment changes" : "Create assessment"}</Button></div>
+      </>}
+    </section>}
+
+    <section className="hud-panel mt-8 p-5 sm:p-7"><div className="flex items-center justify-between"><div><p className="tech-label">Registry</p><h2 className="mt-1 font-display text-xl font-semibold">Assessment inventory</h2></div><span className="tech-label text-[0.55rem]">{exams.data?.length ?? 0} records</span></div><div className="mt-5 overflow-x-auto"><table className="w-full min-w-[700px] text-left text-sm"><thead className="border-b border-cyan-200/15 text-xs text-muted-foreground"><tr><th className="pb-3">Title</th><th className="pb-3">Schedule</th><th className="pb-3">Duration</th><th className="pb-3">State</th><th className="pb-3" /></tr></thead><tbody>{exams.data?.length ? exams.data.map(exam => <tr key={exam.id} className="border-b border-cyan-200/10"><td className="py-4"><p className="font-medium">{exam.title}</p><p className="mt-1 max-w-md truncate text-xs text-muted-foreground">{exam.description ?? "No candidate guidance added."}</p></td><td className="py-4 text-muted-foreground">{formatDate(exam.startsAt)}</td><td className="py-4">{Math.round(exam.durationSeconds / 60)}m</td><td className="py-4"><span className="border border-cyan-200/20 bg-cyan-300/5 px-2 py-1 text-xs text-cyan-100">{exam.status}</span></td><td className="py-4 text-right"><Button size="sm" variant="ghost" onClick={() => openEdit(exam.id)} className="text-pink-300 hover:text-pink-200"><Pencil className="mr-1 h-3.5 w-3.5" />Manage</Button></td></tr>) : <tr><td colSpan={5} className="py-9 text-center text-muted-foreground">Create your first draft assessment to populate the registry.</td></tr>}</tbody></table></div></section>
+
+    <section className="hud-panel mt-6 p-5 sm:p-7"><div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="tech-label">Results archive</p><h2 className="mt-1 font-display text-xl font-semibold">Attempt oversight</h2><p className="mt-2 text-sm text-muted-foreground">Download authorized result summaries or open an attempt review timeline.</p></div><Button disabled={!results.data?.length} onClick={exportCsv} variant="outline" className="border-cyan-200/25 bg-cyan-300/5 text-cyan-100 hover:bg-cyan-300/10"><Download className="mr-1 h-4 w-4" />Download CSV</Button></div><div className="mt-5 divide-y divide-cyan-200/10">{results.data?.length ? results.data.slice(0, 8).map(row => <div key={row.attemptId} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-medium">{row.examTitle}</p><p className="mt-1 text-xs text-muted-foreground">{row.studentName ?? row.studentEmail ?? "Candidate"} · Score {row.score ?? "—"}/{row.maxScore ?? "—"}</p></div><Button size="sm" onClick={() => setLocation(`/admin/attempt/${row.attemptId}`)} className="bg-pink-400/15 text-pink-200 hover:bg-pink-400/25">Review attempt</Button></div>) : <p className="py-8 text-sm text-muted-foreground">No submitted attempts are ready for review.</p>}</div></section>
+  </DashboardLayout>;
+}
+
+function ThresholdField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) { return <label className="grid gap-1 text-xs text-muted-foreground">{label}<Input type="number" min="1" value={String(value)} onChange={event => onChange(Math.max(1, Number(event.target.value) || 1))} className="border-cyan-200/20 bg-black/20" /></label>; }
+function QuestionEditor({ question, index, removable, onChange, onRemove }: { question: QuestionDraft; index: number; removable: boolean; onChange: (question: QuestionDraft) => void; onRemove: () => void }) { return <div className="border border-cyan-200/15 bg-black/15 p-4"><div className="mb-3 flex items-center justify-between"><p className="tech-label">Question {index + 1}</p>{removable && <button onClick={onRemove} className="text-xs text-pink-300">Remove</button>}</div><Textarea value={question.prompt} onChange={event => onChange({ ...question, prompt: event.target.value })} placeholder="Question prompt" className="min-h-20 border-cyan-200/20 bg-black/20" /><div className="mt-3 grid gap-2 sm:grid-cols-2">{(["A", "B", "C", "D"] as const).map(option => <Input key={option} value={question[`option${option}`]} onChange={event => onChange({ ...question, [`option${option}`]: event.target.value })} placeholder={`Option ${option}`} className="border-cyan-200/20 bg-black/20" />)}</div><div className="mt-3 flex gap-3"><select value={question.correctOption} onChange={event => onChange({ ...question, correctOption: event.target.value as AnswerOption })} className="h-9 border border-cyan-200/20 bg-black/20 px-3 text-xs"><option value="A">Correct: A</option><option value="B">Correct: B</option><option value="C">Correct: C</option><option value="D">Correct: D</option></select><Input value={String(question.points)} onChange={event => onChange({ ...question, points: Math.max(1, Number(event.target.value) || 1) })} type="number" min="1" className="h-9 max-w-24 border-cyan-200/20 bg-black/20 text-xs" /></div></div>; }
