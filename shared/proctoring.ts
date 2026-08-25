@@ -10,11 +10,22 @@ export const EVENT_TYPES = [
 export type ProctoringEventType = (typeof EVENT_TYPES)[number];
 export type AnswerOption = "A" | "B" | "C" | "D";
 
+/**
+ * These event types end an active attempt immediately after the event is
+ * recorded. They are assessment-control actions, not misconduct findings.
+ */
+export const IMMEDIATE_SUBMISSION_EVENT_TYPES = ["tab_hidden"] as const;
+
+export function requiresImmediateIntegritySubmission(eventType: ProctoringEventType) {
+  return (IMMEDIATE_SUBMISSION_EVENT_TYPES as readonly ProctoringEventType[]).includes(eventType);
+}
+
 export type ProctoringConfig = {
   faceAbsentThresholdSeconds: number;
   multipleFaceThresholdSeconds: number;
   warningEventCount: number;
   autoSubmitEventCount: number;
+  immediateSubmitOnFocusLoss: boolean;
 };
 
 export const DEFAULT_PROCTORING_CONFIG: ProctoringConfig = {
@@ -22,6 +33,7 @@ export const DEFAULT_PROCTORING_CONFIG: ProctoringConfig = {
   multipleFaceThresholdSeconds: 3,
   warningEventCount: 2,
   autoSubmitEventCount: 5,
+  immediateSubmitOnFocusLoss: true,
 };
 
 export function normalizeProctoringConfig(value: unknown): ProctoringConfig {
@@ -44,6 +56,10 @@ export function normalizeProctoringConfig(value: unknown): ProctoringConfig {
       Number.isInteger(candidate.autoSubmitEventCount) && candidate.autoSubmitEventCount! > 0
         ? candidate.autoSubmitEventCount!
         : DEFAULT_PROCTORING_CONFIG.autoSubmitEventCount,
+    immediateSubmitOnFocusLoss:
+      typeof candidate.immediateSubmitOnFocusLoss === "boolean"
+        ? candidate.immediateSubmitOnFocusLoss
+        : DEFAULT_PROCTORING_CONFIG.immediateSubmitOnFocusLoss,
   };
 }
 

@@ -56,8 +56,8 @@ export function useProctoring({ faceAbsentThresholdSeconds, multipleFaceThreshol
     setFaceCount(null);
   }, []);
 
-  const start = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) { setStatus("unavailable"); setError("Camera access is not supported by this browser."); return; }
+  const start = useCallback(async (): Promise<boolean> => {
+    if (!navigator.mediaDevices?.getUserMedia) { setStatus("unavailable"); setError("Camera access is not supported by this browser."); return false; }
     setStatus("requesting"); setError(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
@@ -90,10 +90,12 @@ export function useProctoring({ faceAbsentThresholdSeconds, multipleFaceThreshol
         frameRef.current = requestAnimationFrame(detect);
       };
       frameRef.current = requestAnimationFrame(detect);
+      return true;
     } catch (caught) {
       stop();
       setStatus("blocked");
       setError(caught instanceof Error ? caught.message : "Camera permission could not be granted.");
+      return false;
     }
   }, [faceAbsentThresholdSeconds, multipleFaceThresholdSeconds, registerBreach, resetBreach, stop]);
 

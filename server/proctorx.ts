@@ -13,6 +13,7 @@ import {
   EVENT_TYPES,
   getIntegrityEscalation,
   normalizeProctoringConfig,
+  requiresImmediateIntegritySubmission,
   type AnswerOption,
 } from "../shared/proctoring";
 
@@ -23,6 +24,7 @@ const proctoringConfigSchema = z.object({
   multipleFaceThresholdSeconds: z.number().int().min(1).max(120).default(DEFAULT_PROCTORING_CONFIG.multipleFaceThresholdSeconds),
   warningEventCount: z.number().int().min(1).max(50).default(DEFAULT_PROCTORING_CONFIG.warningEventCount),
   autoSubmitEventCount: z.number().int().min(2).max(100).default(DEFAULT_PROCTORING_CONFIG.autoSubmitEventCount),
+  immediateSubmitOnFocusLoss: z.boolean().default(DEFAULT_PROCTORING_CONFIG.immediateSubmitOnFocusLoss),
 });
 
 const questionInputSchema = z.object({
@@ -187,14 +189,21 @@ export const proctorxRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const outcome = await db.recordProctoringEvent(ctx.user.id, input);
-        const escalation = getIntegrityEscalation(outcome.eventCount, normalizeProctoringConfig(outcome.proctoringConfig));
-        if (escalation.shouldAutoSubmit) {
-          await db.createAdminNotification({ type: "high_risk_integrity", title: "High-risk integrity threshold", body: `Attempt #${input.attemptId} reached its configured automatic-submission threshold.`, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
+        const config = normalizeProctoringConfig(outcome.proctoringConfig);
+        const escalation = getIntegrityEscalation(outcome.eventCount, config);
+        const immediateSubmission = config.immediateSubmitOnFocusLoss && requiresImmediateIntegritySubmission(input.eventType);
+        const shouldAutoSubmit = immediateSubmission || escalation.shouldAutoSubmit;
+        if (shouldAutoSubmit) {
+          const title = immediateSubmission ? "Assessment submitted after focus loss" : "High-risk integrity threshold";
+          const body = immediateSubmission
+            ? `Attempt #${input.attemptId} was automatically submitted after the browser lost focus or was minimized. Review the recorded context before taking any further action.`
+            : `Attempt #${input.attemptId} reached its configured automatic-submission threshold.`;
+          await db.createAdminNotification({ type: "high_risk_integrity", title, body, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
           notifyAdministrators();
         }
-        if (escalation.shouldAutoSubmit) {
+        if (shouldAutoSubmit) {
           const result = await db.submitExamAttempt(ctx.user.id, input.attemptId, "integrity_threshold");
-          return { ...escalation, submitted: true, result };
+          return { ...escalation, shouldWarn: true, shouldAutoSubmit: true, submitted: true, result };
         }
         return { ...escalation, submitted: false };
       }),
@@ -245,6 +254,9 @@ export const proctorxRouter = router({
         if (!review) throw new TRPCError({ code: "NOT_FOUND", message: "Exam attempt was not found." });
         return review;
       }),
+    reopenAttempt: adminProcedure
+      .input(z.object({ attemptId: z.number().int().positive(), basis: z.enum(["technical_failure", "approved_accommodation"]), note: z.string().trim().min(5).max(1000) }))
+      .mutation(({ ctx, input }) => db.reopenExamAttempt(ctx.user.id, input.attemptId, input.basis, input.note)),
     listUsers: adminProcedure.query(() => db.listManagedUsers()),
     updateUser: adminProcedure
       .input(z.object({ userId: z.number().int().positive(), fullName: z.string().trim().min(2).max(255), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional(), role: z.enum(["user", "admin"]) }))

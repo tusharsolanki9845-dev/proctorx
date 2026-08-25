@@ -12,6 +12,7 @@ vi.mock("./db", () => ({
     timeline.push({ ...input, eventCount });
     return { eventCount, proctoringConfig: { warningEventCount: 2, autoSubmitEventCount: 5, faceAbsentThresholdSeconds: 3, multipleFaceThresholdSeconds: 3 } };
   }),
+  reopenExamAttempt: vi.fn(async (_adminUserId: number, attemptId: number, basis: string, note: string) => ({ id: attemptId, status: "in_progress" as const, basis, note })),
   submitExamAttempt: vi.fn(async (_userId: number, attemptId: number, reason: string) => ({ id: attemptId, submissionReason: reason })),
 }));
 
@@ -23,6 +24,39 @@ function candidateContext(role: "user" | "admin" = "user"): TrpcContext {
 }
 
 describe("Integrity Foundations Demo — procedure and timeline audit", () => {
+  it("immediately submits an active attempt after a focus-loss or minimization event and preserves the review boundary", async () => {
+    timeline.splice(0); vi.clearAllMocks();
+    const candidate = appRouter.createCaller(candidateContext());
+
+    const outcome = await candidate.proctorx.proctoring.logEvent({ attemptId: 900, eventType: "tab_hidden", durationMs: 0 });
+
+    expect(outcome).toMatchObject({ shouldWarn: true, shouldAutoSubmit: true, submitted: true });
+    expect(timeline).toEqual([expect.objectContaining({ attemptId: 900, eventType: "tab_hidden", eventCount: 1 })]);
+    expect(db.submitExamAttempt).toHaveBeenCalledWith(1, 900, "integrity_threshold");
+    expect(db.createAdminNotification).toHaveBeenCalledWith(expect.objectContaining({ title: "Assessment submitted after focus loss", body: expect.stringContaining("Review the recorded context") }));
+  });
+
+  it("keeps focus-loss events reviewable when the assessment disables strict focus submission", async () => {
+    timeline.splice(0); vi.clearAllMocks();
+    vi.mocked(db.recordProctoringEvent).mockResolvedValueOnce({ eventCount: 1, proctoringConfig: { warningEventCount: 2, autoSubmitEventCount: 5, faceAbsentThresholdSeconds: 3, multipleFaceThresholdSeconds: 3, immediateSubmitOnFocusLoss: false } });
+    const candidate = appRouter.createCaller(candidateContext());
+
+    const outcome = await candidate.proctorx.proctoring.logEvent({ attemptId: 900, eventType: "tab_hidden", durationMs: 0 });
+
+    expect(outcome).toMatchObject({ shouldWarn: false, shouldAutoSubmit: false, submitted: false });
+    expect(db.submitExamAttempt).not.toHaveBeenCalled();
+  });
+
+  it("allows an administrator to reopen a submitted attempt only with an explicit handling basis", async () => {
+    vi.clearAllMocks();
+    const administrator = appRouter.createCaller(candidateContext("admin"));
+
+    const result = await administrator.proctorx.admin.reopenAttempt({ attemptId: 900, basis: "technical_failure", note: "Camera permission dialog interrupted setup." });
+
+    expect(result).toMatchObject({ id: 900, status: "in_progress" });
+    expect(db.reopenExamAttempt).toHaveBeenCalledWith(2, 900, "technical_failure", "Camera permission dialog interrupted setup.");
+  });
+
   it("records every cheating signal, warns, auto-submits, and exposes the resulting timeline to the owner and administrator", async () => {
     timeline.splice(0); vi.clearAllMocks();
     const candidate = appRouter.createCaller(candidateContext());

@@ -109,6 +109,7 @@ export async function getStudentOverview(userId: number) {
         startsAt: exams.startsAt,
         endsAt: exams.endsAt,
         status: exams.status,
+        proctoringConfig: exams.proctoringConfig,
       })
       .from(exams)
       .where(sql`${exams.status} in ('scheduled', 'live')`)
@@ -298,6 +299,41 @@ export async function submitExamAttempt(
   });
   await writeAuditLog(userId, "attempt.submitted", "examAttempt", attemptId, { reason, ...result });
   return { id: attemptId, ...result, reason };
+}
+
+export async function reopenExamAttempt(
+  adminUserId: number,
+  attemptId: number,
+  basis: "technical_failure" | "approved_accommodation",
+  note: string
+) {
+  const db = await requireDb();
+  const [attempt] = await db
+    .select({ id: examAttempts.id, status: examAttempts.status })
+    .from(examAttempts)
+    .where(eq(examAttempts.id, attemptId))
+    .limit(1);
+  if (!attempt) throw new Error("Exam attempt was not found.");
+  if (attempt.status === "in_progress") throw new Error("This attempt is already active.");
+  const priorEvents = await db
+    .select({ eventType: proctoringEvents.eventType, severity: proctoringEvents.severity, durationMs: proctoringEvents.durationMs, detectedAt: proctoringEvents.detectedAt })
+    .from(proctoringEvents)
+    .where(eq(proctoringEvents.attemptId, attemptId));
+  const now = new Date();
+  await db.transaction(async tx => {
+    await tx.delete(proctoringEvents).where(eq(proctoringEvents.attemptId, attemptId));
+    await tx
+      .update(examAttempts)
+      .set({ status: "in_progress", startedAt: now, submittedAt: null, submissionReason: null, score: null, maxScore: null, integrityRiskScore: 0, lastActivityAt: now })
+      .where(eq(examAttempts.id, attemptId));
+  });
+  await writeAuditLog(adminUserId, "attempt.reopened", "examAttempt", attemptId, {
+    basis,
+    note,
+    clearedIntegrityEventCount: priorEvents.length,
+    clearedIntegrityEvents: priorEvents.map(event => ({ ...event, detectedAt: event.detectedAt.toISOString() })),
+  });
+  return { id: attemptId, status: "in_progress" as const };
 }
 
 export async function recordProctoringEvent(

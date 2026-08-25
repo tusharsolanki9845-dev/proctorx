@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateExamScore, getIntegrityEscalation, normalizeProctoringConfig } from "../shared/proctoring";
+import { calculateExamScore, getIntegrityEscalation, normalizeProctoringConfig, requiresImmediateIntegritySubmission } from "../shared/proctoring";
 import { getRemainingExamSeconds } from "../shared/examTiming";
 import { appRouter } from "./routers";
 import type { TrpcContext } from "./_core/context";
@@ -32,6 +32,11 @@ describe("ProctorX integrity escalation", () => {
       warningEventCount: 2,
       autoSubmitEventCount: 5,
     });
+  });
+
+  it("classifies browser focus loss as an immediate assessment-submission event", () => {
+    expect(requiresImmediateIntegritySubmission("tab_hidden")).toBe(true);
+    expect(requiresImmediateIntegritySubmission("fullscreen_exit")).toBe(false);
   });
 });
 
