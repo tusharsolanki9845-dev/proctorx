@@ -103,5 +103,12 @@
 - [x] Add a reusable Vercel serverless Express entrypoint, Vite build script, SPA configuration, and source exclusions.
 - [x] Record the exact Vercel environment-variable boundary and Android release gates without committing or exposing values.
 - [ ] Create, deploy, and validate a Vercel-compatible full-stack configuration without exposing existing application secrets.
+- [ ] Assess Firebase Firestore and Firebase Authentication compatibility with the existing MySQL/tRPC ProctorX data model before any provider-level provisioning.
+- [ ] Obtain and present Firebase/Google Cloud project cost and billing requirements before creating production resources.
+- [ ] Provision Firebase resources only after the compatibility and provider-cost gates are satisfied, then integrate them without exposing credentials.
+- [x] Configure the approved Firebase production data service in an India location suitable for nationwide examination delivery, with locked production access rules.
+- [ ] Define a reviewed Firestore document model and server-only authorization boundary that preserves ProctorX’s relational exam, attempt, audit, report, support, and notification semantics.
+- [ ] Replace the Vercel production persistence path with a Firebase Admin-backed Firestore adapter while retaining testable local compatibility until every supported workflow is migrated.
+- [ ] Integrate Firebase Authentication only after mapping the existing role, local-session, verification, reset, and administrator-access controls without weakening authorization.
 - [x] Fix Vercel SPA routing so `/api/trpc/*` reaches the serverless Express function instead of the client-side 404 route.
 - [x] Diagnose and resolve the Vercel serverless function crash for the public tRPC route without exposing secrets.
