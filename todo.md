@@ -113,3 +113,4 @@
 - [ ] Integrate Firebase Authentication only after mapping the existing role, local-session, verification, reset, and administrator-access controls without weakening authorization.
 - [x] Fix Vercel SPA routing so `/api/trpc/*` reaches the serverless Express function instead of the client-side 404 route.
 - [x] Diagnose and resolve the Vercel serverless function crash for the public tRPC route without exposing secrets.
+- [x] Resolve the Firebase Admin serverless ESM compatibility crash by pinning a verified Firebase Admin dependency line and revalidating the Vercel bundle.
