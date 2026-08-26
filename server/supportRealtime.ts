@@ -1,20 +1,10 @@
-type SupportUpdateEmitter = (attemptId: number) => void;
-
-let emitSupportUpdate: SupportUpdateEmitter = () => undefined;
-let emitAdminNotification: () => void = () => undefined;
-
-export function registerSupportRealtimeEmitter(emitter: SupportUpdateEmitter) {
-  emitSupportUpdate = emitter;
-}
-
+/**
+ * Message and alert records are persisted first, then authorized clients refresh
+ * their scoped tRPC queries on a short interval. This is intentionally a no-op:
+ * Vercel functions do not share reliable in-memory emitter state across requests.
+ */
 export function notifySupportConversation(attemptId: number) {
-  emitSupportUpdate(attemptId);
+  void attemptId;
 }
 
-export function registerAdminNotificationEmitter(emitter: () => void) {
-  emitAdminNotification = emitter;
-}
-
-export function notifyAdministrators() {
-  emitAdminNotification();
-}
+export function notifyAdministrators() {}

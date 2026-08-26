@@ -1,11 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { notifyAdministrators, notifySupportConversation, registerAdminNotificationEmitter, registerSupportRealtimeEmitter } from "./supportRealtime";
+import { describe, expect, it } from "vitest";
+import { notifyAdministrators, notifySupportConversation } from "./supportRealtime";
 
-describe("real-time notification emitters", () => {
-  it("emits updates for the affected support conversation and administrator feed", () => {
-    const support = vi.fn(); const admin = vi.fn();
-    registerSupportRealtimeEmitter(support); registerAdminNotificationEmitter(admin);
-    notifySupportConversation(42); notifyAdministrators();
-    expect(support).toHaveBeenCalledWith(42); expect(admin).toHaveBeenCalledOnce();
+describe("Vercel-compatible notification boundary", () => {
+  it("does not rely on an in-memory emitter after a persisted update", () => {
+    expect(() => notifySupportConversation(42)).not.toThrow();
+    expect(() => notifyAdministrators()).not.toThrow();
   });
 });

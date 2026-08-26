@@ -89,3 +89,17 @@
 - [x] Inspect the requested Ponytail code identifier, determine its intended integration boundary, and implement it only after the project role is unambiguous.
 - [x] Locate the requested Ponytail GitHub repository, review its documentation and license, and assess its compatibility before any download or execution.
 - [x] Inventory eligible current-workspace projects and apply the vetted non-runtime Ponytail development-policy template without third-party hooks or production runtime changes.
+- [ ] Prepare a production Android release checklist and physical-device permission test record for the published ProctorX domain.
+- [ ] Configure the Capacitor wrapper with the published ProctorX HTTPS domain after the user publishes the application.
+- [ ] Run consented physical Android camera, microphone, fullscreen, backgrounding, and recovery checks against the published wrapper.
+- [ ] Configure a user-owned Android signing key and generate a signed release APK after device validation passes.
+- [x] Inspect Vercel deployment compatibility for the full-stack ProctorX application, including database, sessions, Socket.IO, and Android-wrapper domain requirements.
+- [ ] Prepare and validate Vercel deployment configuration and required environment values before publishing externally.
+- [ ] Deploy the compatible ProctorX build on Vercel, verify core flows, and update the Android-wrapper release domain documentation.
+- [x] Add a device-aware website Downloads experience with Android APK release status and desktop/PWA access guidance.
+- [ ] Publish only a validated signed Android APK through the website and provide a non-APK desktop web/PWA route.
+- [x] Replace the persistent Socket.IO transport with a Vercel-compatible real-time design while preserving support-message and administrator-alert authorization.
+- [x] Add a device-aware Downloads page that clearly distinguishes signed Android APK availability from desktop/PWA access.
+- [x] Add a reusable Vercel serverless Express entrypoint, Vite build script, SPA configuration, and source exclusions.
+- [x] Record the exact Vercel environment-variable boundary and Android release gates without committing or exposing values.
+- [ ] Create, deploy, and validate a Vercel-compatible full-stack configuration without exposing existing application secrets.
