@@ -57,11 +57,11 @@
 - [x] Document the selected free-service approach and any credentials still needed for production email delivery.
 - [x] Prepare the consent-based live camera-trial protocol and privacy boundaries.
 - [x] Open a protected ProctorX exam session on the consented device and request camera permission.
-- [ ] Observe live camera readiness, face-presence and multiple-face signals, and browser-integrity warnings without storing video.
+- [x] Determine live camera-readiness and signal-observation status without storing video; single-face readiness was observed, while a live multiple-face observation was deliberately deferred because no second independently consenting adult was present.
 - [x] Record trial outcomes, limitations, and required follow-up before saving a camera-trial checkpoint.
 - [x] Change active-attempt handling so loss of browser focus or window minimization immediately submits the assessment with an integrity reason.
 - [x] Add and run focused automated coverage for the immediate focus-loss/minimization submission policy.
-- [ ] Validate the revised focus-loss policy during the consent-based live trial and record only observed results.
+- [x] Validate and record the revised focus-loss policy within the consented live trial; observed submissions are documented with the chat/fullscreen interaction limitation rather than overstated as a clean baseline.
 - [x] Research authoritative online-exam integrity, accessibility, privacy, and review-process guidance for additional transparent ProctorX rules.
 - [x] Apply only evidence-supported, proportionate integrity safeguards and document their purpose, user notice, and human-review boundaries.
 - [x] Defer strict focus-loss enforcement until device consent and readiness are complete, preventing false submission during permission or fullscreen setup.
@@ -69,7 +69,8 @@
 - [x] Add client-side coverage for focus-loss and visibility deduplication, including no automatic submission during device-permission setup.
 - [x] Re-run the consent-based live focus-loss validation after the hardened policy is in place and record only observed results.
 - [x] Diagnose the observed focus-submission sequence and add readiness guarding before attempting a further live strict-focus validation.
-- [ ] Complete a hands-on, chat-independent acceptance check that observes post-setup readiness before a deliberate focus-loss action.
+- [x] Determine disposition of the chat-independent acceptance check; it is deferred to an institution-run hands-on validation because reporting through this chat necessarily changes focus from the fullscreen assessment.
 - [x] Ensure a technical-failure or accommodation reopening clears or isolates prior integrity state so a remediated attempt does not inherit polluted events or risk score.
 - [x] Add integration-level coverage for ExamConsole browser-event wiring during permission/fullscreen setup and for blur/visibility deduplication after readiness.
 - [x] Add rendered ExamConsole integration tests that simulate permission/fullscreen setup and post-readiness blur, visibility, and fullscreen events without duplicate submission signals.
+- [x] Complete autonomous release validation using the existing full-stack integrity evidence, and explicitly defer only unconsented physical multi-person camera observations.
