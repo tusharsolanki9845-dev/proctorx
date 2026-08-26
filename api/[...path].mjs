@@ -323,8 +323,521 @@ var ENV = {
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? ""
 };
 
+// server/firebaseAdmin.ts
+import { cert, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
+var FIREBASE_SERVICE_ACCOUNT_ENV = "FIREBASE_SERVICE_ACCOUNT_JSON";
+var firebaseApp = null;
+function parseFirebaseServiceAccount(raw) {
+  if (!raw?.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${FIREBASE_SERVICE_ACCOUNT_ENV} must contain valid JSON.`);
+  }
+  if (!parsed.project_id || !parsed.client_email || !parsed.private_key) {
+    throw new Error(`${FIREBASE_SERVICE_ACCOUNT_ENV} is missing required service-account fields.`);
+  }
+  return {
+    projectId: parsed.project_id,
+    clientEmail: parsed.client_email,
+    privateKey: parsed.private_key.replace(/\\n/g, "\n")
+  };
+}
+function isFirebaseAdminConfigured(raw = process.env[FIREBASE_SERVICE_ACCOUNT_ENV]) {
+  return Boolean(raw?.trim());
+}
+function getFirebaseAdminApp() {
+  if (firebaseApp) return firebaseApp;
+  const serviceAccount = parseFirebaseServiceAccount(process.env[FIREBASE_SERVICE_ACCOUNT_ENV]);
+  if (!serviceAccount) {
+    throw new Error(`${FIREBASE_SERVICE_ACCOUNT_ENV} is required for Firebase-backed production persistence.`);
+  }
+  firebaseApp = getApps()[0] ?? initializeApp({ credential: cert(serviceAccount) });
+  return firebaseApp;
+}
+function getFirebaseFirestore() {
+  return getFirestore(getFirebaseAdminApp());
+}
+
+// server/firestoreExamStore.ts
+import { Timestamp } from "firebase-admin/firestore";
+var asDate = (value) => !value ? null : value instanceof Timestamp ? value.toDate() : value;
+var timestamp2 = (value) => value ? Timestamp.fromDate(value) : null;
+var asBoolNumber = (value) => value ? 1 : 0;
+async function nextId(entity) {
+  const db = getFirebaseFirestore();
+  return db.runTransaction(async (transaction) => {
+    const counter = db.collection("meta").doc("counters");
+    const snapshot = await transaction.get(counter);
+    const id = Number(snapshot.data()?.[entity] ?? 0) + 1;
+    transaction.set(counter, { [entity]: id }, { merge: true });
+    return id;
+  });
+}
+function presentExam(data) {
+  return { ...data, startsAt: asDate(data.startsAt), endsAt: asDate(data.endsAt), createdAt: asDate(data.createdAt), updatedAt: asDate(data.updatedAt) };
+}
+function presentAttempt(data) {
+  return { ...data, startedAt: asDate(data.startedAt), submittedAt: asDate(data.submittedAt), lastActivityAt: asDate(data.lastActivityAt) };
+}
+async function getAttemptOwner(attemptId) {
+  const snapshot = await getFirebaseFirestore().collection("attempts").doc(String(attemptId)).get();
+  return snapshot.exists ? presentAttempt(snapshot.data()) : null;
+}
+async function getStudentOverview(userId) {
+  const db = getFirebaseFirestore();
+  const [user, examSnapshot, attemptSnapshot] = await Promise.all([
+    db.collection("users").doc(String(userId)).get(),
+    db.collection("exams").get(),
+    db.collection("attempts").where("userId", "==", userId).get()
+  ]);
+  const profile = user.exists && user.data()?.profile ? { id: userId, userId, ...user.data().profile, createdAt: asDate(user.data().createdAt), updatedAt: asDate(user.data().updatedAt) } : null;
+  const availableExams = examSnapshot.docs.map((doc) => presentExam(doc.data())).filter((exam) => exam.status === "scheduled" || exam.status === "live").sort((a, b) => (a.startsAt?.getTime() ?? 0) - (b.startsAt?.getTime() ?? 0)).slice(0, 30).map((exam) => ({ id: exam.id, title: exam.title, description: exam.description, durationSeconds: exam.durationSeconds, startsAt: exam.startsAt, endsAt: exam.endsAt, status: exam.status, proctoringConfig: exam.proctoringConfig }));
+  const examMap = new Map(examSnapshot.docs.map((doc) => [Number(doc.id), presentExam(doc.data())]));
+  const attempts = attemptSnapshot.docs.map((doc) => presentAttempt(doc.data())).sort((a, b) => (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0)).slice(0, 30).map((attempt) => {
+    const exam = examMap.get(attempt.examId);
+    return { ...attempt, examTitle: exam?.title ?? "Assessment", releaseResultsImmediately: exam?.releaseResultsImmediately ?? 0 };
+  });
+  return { profile, availableExams, attempts };
+}
+async function startExamAttempt(userId, examId) {
+  const db = getFirebaseFirestore();
+  const examRef = db.collection("exams").doc(String(examId));
+  return db.runTransaction(async (transaction) => {
+    const examSnapshot = await transaction.get(examRef);
+    if (!examSnapshot.exists) throw new Error("This exam is not available.");
+    const exam = presentExam(examSnapshot.data());
+    if (!["scheduled", "live"].includes(exam.status)) throw new Error("This exam is not available.");
+    const now = /* @__PURE__ */ new Date();
+    if (exam.startsAt && exam.startsAt > now || exam.endsAt && exam.endsAt < now) throw new Error("This exam is outside its scheduled window.");
+    const existing = await transaction.get(db.collection("attempts").where("userId", "==", userId));
+    const attempts = existing.docs.map((doc) => presentAttempt(doc.data())).filter((attempt) => attempt.examId === examId);
+    const active = attempts.find((attempt) => attempt.status === "in_progress");
+    if (active) return { id: active.id };
+    if (attempts.length >= Number(exam.maxAttempts ?? 1)) throw new Error("The maximum number of attempts has been reached.");
+    const id = await nextId("attempts");
+    const nowTimestamp = Timestamp.now();
+    transaction.create(db.collection("attempts").doc(String(id)), { id, examId, userId, status: "in_progress", startedAt: nowTimestamp, submittedAt: null, submissionReason: null, score: null, maxScore: null, integrityRiskScore: 0, lastActivityAt: nowTimestamp });
+    return { id };
+  });
+}
+async function getStudentAttempt(userId, attemptId) {
+  const db = getFirebaseFirestore();
+  const attemptSnapshot = await db.collection("attempts").doc(String(attemptId)).get();
+  if (!attemptSnapshot.exists) return null;
+  const attempt = presentAttempt(attemptSnapshot.data());
+  if (attempt.userId !== userId) return null;
+  const [examSnapshot, questions2, answers, events] = await Promise.all([
+    db.collection("exams").doc(String(attempt.examId)).get(),
+    db.collection("exams").doc(String(attempt.examId)).collection("questions").get(),
+    db.collection("attempts").doc(String(attemptId)).collection("answers").get(),
+    db.collection("attempts").doc(String(attemptId)).collection("events").get()
+  ]);
+  if (!examSnapshot.exists) return null;
+  const exam = presentExam(examSnapshot.data());
+  const safeQuestions = questions2.docs.map((doc) => doc.data()).sort((a, b) => a.orderIndex - b.orderIndex).map((question) => ({ id: question.id, prompt: question.prompt, optionA: question.optionA, optionB: question.optionB, optionC: question.optionC, optionD: question.optionD, points: question.points, orderIndex: question.orderIndex }));
+  return {
+    attempt: { ...attempt, title: exam.title, description: exam.description, durationSeconds: exam.durationSeconds, endsAt: exam.endsAt, releaseResultsImmediately: exam.releaseResultsImmediately, proctoringConfig: exam.proctoringConfig },
+    questions: safeQuestions,
+    answers: answers.docs.map((doc) => ({ ...doc.data(), answeredAt: asDate(doc.data().answeredAt) })),
+    events: events.docs.map((doc) => ({ ...doc.data(), detectedAt: asDate(doc.data().detectedAt) })).sort((a, b) => (b.detectedAt?.getTime() ?? 0) - (a.detectedAt?.getTime() ?? 0))
+  };
+}
+async function saveAttemptAnswer(userId, input) {
+  const db = getFirebaseFirestore();
+  const attemptRef = db.collection("attempts").doc(String(input.attemptId));
+  await db.runTransaction(async (transaction) => {
+    const attemptSnapshot = await transaction.get(attemptRef);
+    if (!attemptSnapshot.exists) throw new Error("This exam attempt is no longer editable.");
+    const attempt = presentAttempt(attemptSnapshot.data());
+    if (attempt.userId !== userId || attempt.status !== "in_progress") throw new Error("This exam attempt is no longer editable.");
+    const question = await transaction.get(db.collection("exams").doc(String(attempt.examId)).collection("questions").doc(String(input.questionId)));
+    if (!question.exists) throw new Error("The selected question does not belong to this exam.");
+    transaction.set(attemptRef.collection("answers").doc(String(input.questionId)), { id: input.questionId, attemptId: input.attemptId, questionId: input.questionId, selectedOption: input.selectedOption, markedForReview: asBoolNumber(input.markedForReview), isCorrect: null, answeredAt: input.selectedOption ? Timestamp.now() : null }, { merge: true });
+    transaction.update(attemptRef, { lastActivityAt: Timestamp.now() });
+  });
+  return { success: true };
+}
+async function submitExamAttempt(userId, attemptId, reason) {
+  const db = getFirebaseFirestore();
+  const attemptRef = db.collection("attempts").doc(String(attemptId));
+  return db.runTransaction(async (transaction) => {
+    const attemptSnapshot = await transaction.get(attemptRef);
+    if (!attemptSnapshot.exists) throw new Error("Exam attempt was not found.");
+    const attempt = presentAttempt(attemptSnapshot.data());
+    if (attempt.userId !== userId) throw new Error("Exam attempt was not found.");
+    if (attempt.status !== "in_progress") return { id: attemptId, score: attempt.score, maxScore: attempt.maxScore, reason: attempt.submissionReason };
+    const [questionSnapshot, answerSnapshot] = await Promise.all([
+      transaction.get(db.collection("exams").doc(String(attempt.examId)).collection("questions")),
+      transaction.get(attemptRef.collection("answers"))
+    ]);
+    const questions2 = questionSnapshot.docs.map((doc) => doc.data());
+    const answers = new Map(answerSnapshot.docs.map((doc) => [Number(doc.data().questionId), doc.data().selectedOption]));
+    const result = calculateExamScore(questions2.map((question) => ({ id: question.id, correctOption: question.correctOption, points: question.points })), answers);
+    for (const answer of answerSnapshot.docs) {
+      const question = questions2.find((row) => row.id === answer.data().questionId);
+      transaction.update(answer.ref, { isCorrect: question && answer.data().selectedOption === question.correctOption ? 1 : 0 });
+    }
+    transaction.update(attemptRef, { status: "submitted", submittedAt: Timestamp.now(), submissionReason: reason, score: result.score, maxScore: result.maxScore, lastActivityAt: Timestamp.now() });
+    return { id: attemptId, ...result, reason };
+  });
+}
+async function recordProctoringEvent(userId, input) {
+  const db = getFirebaseFirestore();
+  const attemptRef = db.collection("attempts").doc(String(input.attemptId));
+  return db.runTransaction(async (transaction) => {
+    const attemptSnapshot = await transaction.get(attemptRef);
+    if (!attemptSnapshot.exists) throw new Error("This exam attempt is not accepting integrity events.");
+    const attempt = presentAttempt(attemptSnapshot.data());
+    if (attempt.userId !== userId || attempt.status !== "in_progress") throw new Error("This exam attempt is not accepting integrity events.");
+    const exam = await transaction.get(db.collection("exams").doc(String(attempt.examId)));
+    const config = normalizeProctoringConfig(exam.data()?.proctoringConfig);
+    const events = await transaction.get(attemptRef.collection("events"));
+    const eventCount = events.size + 1;
+    const severity = eventCount >= config.autoSubmitEventCount ? "critical" : eventCount >= config.warningEventCount ? "warning" : "info";
+    const eventRef = attemptRef.collection("events").doc();
+    transaction.create(eventRef, { id: eventRef.id, attemptId: input.attemptId, eventType: input.eventType, severity, detectedAt: Timestamp.now(), durationMs: input.durationMs, metadata: input.metadata ?? null, resolvedAt: null });
+    transaction.update(attemptRef, { integrityRiskScore: eventCount, lastActivityAt: Timestamp.now() });
+    return { eventCount, proctoringConfig: config };
+  });
+}
+async function writeAuditLog(actorUserId, action, entityType, entityId, metadata) {
+  await getFirebaseFirestore().collection("auditLogs").add({ actorUserId, action, entityType, entityId, metadata: metadata ?? null, createdAt: Timestamp.now() });
+}
+async function listAdminExams() {
+  const snapshot = await getFirebaseFirestore().collection("exams").get();
+  return snapshot.docs.map((doc) => presentExam(doc.data())).sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)).map((exam) => ({ id: exam.id, title: exam.title, description: exam.description, durationSeconds: exam.durationSeconds, startsAt: exam.startsAt, endsAt: exam.endsAt, status: exam.status, maxAttempts: exam.maxAttempts, createdAt: exam.createdAt }));
+}
+async function getAdminExam(examId) {
+  const db = getFirebaseFirestore();
+  const [examSnapshot, questionSnapshot] = await Promise.all([db.collection("exams").doc(String(examId)).get(), db.collection("exams").doc(String(examId)).collection("questions").get()]);
+  if (!examSnapshot.exists) return null;
+  const questionRows = questionSnapshot.docs.map((doc) => doc.data());
+  const questions2 = questionRows.map((question) => ({ ...question, createdAt: asDate(question.createdAt), updatedAt: asDate(question.updatedAt) }));
+  questions2.sort((a, b) => Number(a.orderIndex) - Number(b.orderIndex));
+  return { exam: presentExam(examSnapshot.data()), questions: questions2 };
+}
+async function createExam(adminUserId, input) {
+  const db = getFirebaseFirestore();
+  const id = await nextId("exams");
+  const now = Timestamp.now();
+  const batch = db.batch();
+  batch.create(db.collection("exams").doc(String(id)), { id, createdByUserId: adminUserId, title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp2(input.startsAt), endsAt: timestamp2(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), createdAt: now, updatedAt: now });
+  for (let index2 = 0; index2 < input.questions.length; index2 += 1) {
+    const question = input.questions[index2];
+    const questionId = await nextId("questions");
+    batch.create(db.collection("exams").doc(String(id)).collection("questions").doc(String(questionId)), { id: questionId, examId: id, ...question, orderIndex: index2, createdAt: now, updatedAt: now });
+  }
+  await batch.commit();
+  await writeAuditLog(adminUserId, "exam.created", "exam", id, { questionCount: input.questions.length });
+  return { id };
+}
+async function updateExam(adminUserId, examId, input) {
+  const db = getFirebaseFirestore();
+  const examRef = db.collection("exams").doc(String(examId));
+  const [examSnapshot, attemptSnapshot, existingQuestions] = await Promise.all([examRef.get(), db.collection("attempts").where("examId", "==", examId).get(), examRef.collection("questions").get()]);
+  if (!examSnapshot.exists) throw new Error("Assessment was not found.");
+  if (!attemptSnapshot.empty) throw new Error("Assessments with recorded attempts cannot have their questions or settings changed.");
+  const batch = db.batch();
+  batch.update(examRef, { title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp2(input.startsAt), endsAt: timestamp2(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), updatedAt: Timestamp.now() });
+  existingQuestions.docs.forEach((question) => batch.delete(question.ref));
+  for (let index2 = 0; index2 < input.questions.length; index2 += 1) {
+    const question = input.questions[index2];
+    const questionId = await nextId("questions");
+    batch.create(examRef.collection("questions").doc(String(questionId)), { id: questionId, examId, ...question, orderIndex: index2, createdAt: Timestamp.now(), updatedAt: Timestamp.now() });
+  }
+  await batch.commit();
+  await writeAuditLog(adminUserId, "exam.updated", "exam", examId, { questionCount: input.questions.length });
+  return { id: examId };
+}
+async function reopenExamAttempt(adminUserId, attemptId, basis, note) {
+  const db = getFirebaseFirestore();
+  const ref = db.collection("attempts").doc(String(attemptId));
+  const [attemptSnapshot, events] = await Promise.all([ref.get(), ref.collection("events").get()]);
+  if (!attemptSnapshot.exists) throw new Error("Exam attempt was not found.");
+  const attempt = presentAttempt(attemptSnapshot.data());
+  if (attempt.status === "in_progress") throw new Error("This attempt is already active.");
+  const batch = db.batch();
+  events.docs.forEach((event) => batch.delete(event.ref));
+  batch.update(ref, { status: "in_progress", startedAt: Timestamp.now(), submittedAt: null, submissionReason: null, score: null, maxScore: null, integrityRiskScore: 0, lastActivityAt: Timestamp.now() });
+  await batch.commit();
+  await writeAuditLog(adminUserId, "attempt.reopened", "examAttempt", attemptId, { basis, note, clearedIntegrityEventCount: events.size });
+  return { id: attemptId, status: "in_progress" };
+}
+async function getAttemptReview(attemptId) {
+  const db = getFirebaseFirestore();
+  const attemptSnapshot = await db.collection("attempts").doc(String(attemptId)).get();
+  if (!attemptSnapshot.exists) return null;
+  const attempt = presentAttempt(attemptSnapshot.data());
+  const [examSnapshot, userSnapshot, questions2, answers, events] = await Promise.all([db.collection("exams").doc(String(attempt.examId)).get(), db.collection("users").doc(String(attempt.userId)).get(), db.collection("exams").doc(String(attempt.examId)).collection("questions").get(), db.collection("attempts").doc(String(attemptId)).collection("answers").get(), db.collection("attempts").doc(String(attemptId)).collection("events").get()]);
+  if (!examSnapshot.exists || !userSnapshot.exists) return null;
+  const exam = presentExam(examSnapshot.data());
+  const user = userSnapshot.data();
+  const answerMap = new Map(answers.docs.map((doc) => [Number(doc.data().questionId), doc.data()]));
+  return { attempt: { ...attempt, examTitle: exam.title, studentName: user.name, studentEmail: user.email, rollNumber: user.profile?.rollNumber ?? null, collegeName: user.profile?.collegeName ?? null }, answers: questions2.docs.map((doc) => {
+    const question = doc.data();
+    const answer = answerMap.get(question.id);
+    return { questionId: question.id, prompt: question.prompt, selectedOption: answer?.selectedOption ?? null, correctOption: question.correctOption, isCorrect: answer?.isCorrect ?? null, markedForReview: answer?.markedForReview ?? 0 };
+  }).sort((a, b) => a.questionId - b.questionId), events: events.docs.map((doc) => ({ ...doc.data(), detectedAt: asDate(doc.data().detectedAt) })).sort((a, b) => (b.detectedAt?.getTime() ?? 0) - (a.detectedAt?.getTime() ?? 0)) };
+}
+async function getResultsExport() {
+  const db = getFirebaseFirestore();
+  const [attempts, exams2, users2] = await Promise.all([db.collection("attempts").get(), db.collection("exams").get(), db.collection("users").get()]);
+  const examMap = new Map(exams2.docs.map((doc) => [Number(doc.id), presentExam(doc.data())]));
+  const userMap = new Map(users2.docs.map((doc) => [Number(doc.id), doc.data()]));
+  return attempts.docs.map((doc) => presentAttempt(doc.data())).map((attempt) => ({ attemptId: attempt.id, examTitle: examMap.get(attempt.examId)?.title ?? "Assessment", studentName: userMap.get(attempt.userId)?.name ?? null, studentEmail: userMap.get(attempt.userId)?.email ?? null, score: attempt.score, maxScore: attempt.maxScore, status: attempt.status, submittedAt: attempt.submittedAt, submissionReason: attempt.submissionReason, integrityRiskScore: attempt.integrityRiskScore })).sort((a, b) => (b.submittedAt?.getTime() ?? 0) - (a.submittedAt?.getTime() ?? 0));
+}
+async function sendSupportMessage(input) {
+  const db = getFirebaseFirestore();
+  const attempt = await getAttemptOwner(input.attemptId);
+  if (!attempt || !canSendSupportMessage({ requesterUserId: input.senderUserId, attemptOwnerUserId: attempt.userId, attemptStatus: attempt.status, senderRole: input.senderRole })) throw new Error("Support chat is available only during your active exam attempt.");
+  const ref = db.collection("attempts").doc(String(input.attemptId)).collection("support").doc();
+  await ref.create({ id: ref.id, ...input, createdAt: Timestamp.now(), readAt: null });
+  return { id: ref.id };
+}
+async function getSupportMessages(attemptId, requesterUserId, isAdmin) {
+  const db = getFirebaseFirestore();
+  const attempt = await getAttemptOwner(attemptId);
+  if (!attempt || !canAccessAttemptReport({ requesterUserId, attemptOwnerUserId: attempt.userId, isAdmin })) throw new Error("Support conversation was not found.");
+  const supportCollection = db.collection("attempts").doc(String(attemptId)).collection("support");
+  const messages = await supportCollection.get();
+  if (isAdmin) {
+    const batch = db.batch();
+    messages.docs.filter((doc) => doc.data().senderRole === "student" && !doc.data().readAt).forEach((doc) => batch.update(doc.ref, { readAt: Timestamp.now() }));
+    await batch.commit();
+  }
+  const users2 = await Promise.all(messages.docs.map((doc) => db.collection("users").doc(String(doc.data().senderUserId)).get()));
+  const nameMap = new Map(users2.filter((user) => user.exists).map((user) => [Number(user.id), user.data().name]));
+  return { attempt, messages: messages.docs.map((doc) => ({ ...doc.data(), createdAt: asDate(doc.data().createdAt), readAt: asDate(doc.data().readAt), senderName: nameMap.get(Number(doc.data().senderUserId)) ?? null })).sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0)) };
+}
+async function listSupportInbox() {
+  const db = getFirebaseFirestore();
+  const messages = await db.collectionGroup("support").get();
+  const records = await Promise.all(messages.docs.map(async (doc) => {
+    const message = doc.data();
+    const attemptId = Number(message.attemptId);
+    const attempt = await getAttemptOwner(attemptId);
+    const [exam, student] = attempt ? await Promise.all([db.collection("exams").doc(String(attempt.examId)).get(), db.collection("users").doc(String(attempt.userId)).get()]) : [null, null];
+    return { id: message.id, attemptId, senderRole: message.senderRole, message: message.message, createdAt: asDate(message.createdAt), readAt: asDate(message.readAt), examTitle: exam?.data()?.title ?? "Assessment", studentName: student?.data()?.name ?? null, studentEmail: student?.data()?.email ?? null };
+  }));
+  return records.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)).slice(0, 100);
+}
+async function createAdminNotification(input) {
+  const ref = getFirebaseFirestore().collection("adminNotifications").doc();
+  await ref.create({ id: ref.id, ...input, relatedAttemptId: input.relatedAttemptId ?? null, createdAt: Timestamp.now(), readAt: null });
+  return { id: ref.id };
+}
+async function listAdminNotifications() {
+  const snapshot = await getFirebaseFirestore().collection("adminNotifications").get();
+  return snapshot.docs.map((doc) => ({ ...doc.data(), createdAt: asDate(doc.data().createdAt), readAt: asDate(doc.data().readAt) })).sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0)).slice(0, 80);
+}
+async function markAdminNotificationRead(notificationId) {
+  await getFirebaseFirestore().collection("adminNotifications").doc(String(notificationId)).set({ readAt: Timestamp.now() }, { merge: true });
+}
+
+// server/firestoreIdentityStore.ts
+import { createHash as createHash2 } from "node:crypto";
+import { Timestamp as Timestamp2 } from "firebase-admin/firestore";
+function lookupId(value) {
+  return createHash2("sha256").update(value.trim().toLowerCase()).digest("hex");
+}
+function asDate2(value) {
+  if (!value) return null;
+  return value instanceof Timestamp2 ? value.toDate() : value;
+}
+function presentUser(record) {
+  return {
+    id: record.id,
+    openId: record.openId,
+    name: record.name,
+    email: record.email,
+    emailVerifiedAt: asDate2(record.emailVerifiedAt),
+    loginMethod: record.loginMethod,
+    role: record.role,
+    createdAt: asDate2(record.createdAt),
+    updatedAt: asDate2(record.updatedAt),
+    lastSignedIn: asDate2(record.lastSignedIn)
+  };
+}
+async function nextIdInTransaction(entity, transaction) {
+  const db = getFirebaseFirestore();
+  const counter = db.collection("meta").doc("counters");
+  const current = await transaction.get(counter);
+  const next = Number(current.data()?.[entity] ?? 0) + 1;
+  transaction.set(counter, { [entity]: next }, { merge: true });
+  return next;
+}
+async function nextId2(entity) {
+  const db = getFirebaseFirestore();
+  return db.runTransaction((transaction) => nextIdInTransaction(entity, transaction));
+}
+async function upsertUser(input) {
+  if (!input.openId) throw new Error("User openId is required for upsert");
+  const db = getFirebaseFirestore();
+  const lookup = db.collection("userLookup").doc("openId").collection("entries").doc(lookupId(input.openId));
+  const now = Timestamp2.now();
+  await db.runTransaction(async (transaction) => {
+    const existingLookup = await transaction.get(lookup);
+    const id = existingLookup.exists ? Number(existingLookup.data().userId) : await nextIdInTransaction("users", transaction);
+    const userRef = db.collection("users").doc(String(id));
+    const prior = await transaction.get(userRef);
+    const priorData = prior.exists ? prior.data() : void 0;
+    const record = {
+      id,
+      openId: input.openId,
+      name: input.name ?? priorData?.name ?? null,
+      email: input.email ?? priorData?.email ?? null,
+      loginMethod: input.loginMethod ?? priorData?.loginMethod ?? null,
+      role: input.role ?? priorData?.role ?? "user",
+      lastSignedIn: Timestamp2.fromDate(input.lastSignedIn ?? /* @__PURE__ */ new Date()),
+      updatedAt: now
+    };
+    if (!prior.exists) {
+      record.createdAt = now;
+      record.emailVerifiedAt = null;
+    }
+    transaction.set(userRef, record, { merge: true });
+    transaction.set(lookup, { userId: id });
+    if (record.email) {
+      transaction.set(db.collection("userLookup").doc("email").collection("entries").doc(lookupId(record.email)), { userId: id });
+    }
+  });
+}
+async function getUserByOpenId(openId) {
+  const db = getFirebaseFirestore();
+  const lookup = await db.collection("userLookup").doc("openId").collection("entries").doc(lookupId(openId)).get();
+  if (!lookup.exists) return void 0;
+  const record = await db.collection("users").doc(String(lookup.data().userId)).get();
+  return record.exists ? presentUser(record.data()) : void 0;
+}
+async function getUserById(userId) {
+  const record = await getFirebaseFirestore().collection("users").doc(String(userId)).get();
+  return record.exists ? presentUser(record.data()) : null;
+}
+async function getStudentProfile(userId) {
+  const record = await getFirebaseFirestore().collection("users").doc(String(userId)).get();
+  if (!record.exists) return null;
+  const user = record.data();
+  if (!user.profile) return null;
+  return { id: userId, userId, ...user.profile, createdAt: asDate2(user.createdAt), updatedAt: asDate2(user.updatedAt) };
+}
+async function upsertStudentProfile(input) {
+  const db = getFirebaseFirestore();
+  await db.collection("users").doc(String(input.userId)).set(
+    {
+      profile: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null },
+      updatedAt: Timestamp2.now()
+    },
+    { merge: true }
+  );
+  return getStudentProfile(input.userId);
+}
+async function createLocalStudent(input) {
+  const db = getFirebaseFirestore();
+  const emailLookup = db.collection("userLookup").doc("email").collection("entries").doc(lookupId(input.email));
+  const openIdLookup = db.collection("userLookup").doc("openId").collection("entries").doc(lookupId(input.openId));
+  return db.runTransaction(async (transaction) => {
+    const existing = await transaction.get(emailLookup);
+    if (existing.exists) throw new Error("An account already exists for this email address.");
+    const id = await nextIdInTransaction("users", transaction);
+    const now = Timestamp2.now();
+    const record = {
+      id,
+      openId: input.openId,
+      name: input.fullName,
+      email: input.email,
+      emailVerifiedAt: null,
+      loginMethod: "local",
+      role: "user",
+      createdAt: now,
+      updatedAt: now,
+      lastSignedIn: now,
+      profile: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null },
+      passwordHash: input.passwordHash
+    };
+    transaction.create(db.collection("users").doc(String(id)), record);
+    transaction.create(emailLookup, { userId: id });
+    transaction.create(openIdLookup, { userId: id });
+    return { id };
+  });
+}
+async function findLocalCredentialByEmail(email) {
+  const db = getFirebaseFirestore();
+  const lookup = await db.collection("userLookup").doc("email").collection("entries").doc(lookupId(email)).get();
+  if (!lookup.exists) return null;
+  const user = await db.collection("users").doc(String(lookup.data().userId)).get();
+  if (!user.exists) return null;
+  const data = user.data();
+  if (!data.passwordHash) return null;
+  return { userId: data.id, passwordHash: data.passwordHash, role: data.role, email: data.email, name: data.name, emailVerifiedAt: asDate2(data.emailVerifiedAt) };
+}
+async function findLocalAccountByEmail(email) {
+  const user = await findLocalCredentialByEmail(email);
+  return user ? { userId: user.userId, email: user.email, emailVerifiedAt: user.emailVerifiedAt, fullName: user.name } : null;
+}
+async function createAccountToken(userId, purpose, tokenHash, expiresAt) {
+  const db = getFirebaseFirestore();
+  await db.collection("accountTokens").doc(tokenHash).create({ userId, purpose, tokenHash, expiresAt: Timestamp2.fromDate(expiresAt), consumedAt: null, createdAt: Timestamp2.now() });
+  return { id: tokenHash };
+}
+async function consumeAccountToken(tokenHash, purpose) {
+  const db = getFirebaseFirestore();
+  const ref = db.collection("accountTokens").doc(tokenHash);
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (!snapshot.exists) return null;
+    const token = snapshot.data();
+    if (token.purpose !== purpose || token.consumedAt || token.expiresAt.toDate() <= /* @__PURE__ */ new Date()) return null;
+    transaction.update(ref, { consumedAt: Timestamp2.now() });
+    return { id: tokenHash, userId: token.userId, purpose: token.purpose, expiresAt: token.expiresAt.toDate(), consumedAt: null };
+  });
+}
+async function markEmailVerified(userId) {
+  await getFirebaseFirestore().collection("users").doc(String(userId)).set({ emailVerifiedAt: Timestamp2.now(), updatedAt: Timestamp2.now() }, { merge: true });
+}
+async function replaceLocalPassword(userId, passwordHash) {
+  await getFirebaseFirestore().collection("users").doc(String(userId)).set({ passwordHash, updatedAt: Timestamp2.now() }, { merge: true });
+}
+async function touchUserSignIn(userId) {
+  await getFirebaseFirestore().collection("users").doc(String(userId)).set({ lastSignedIn: Timestamp2.now(), updatedAt: Timestamp2.now() }, { merge: true });
+}
+async function ensureConfiguredAdmin(openId) {
+  const existing = await getUserByOpenId(openId);
+  if (existing) {
+    await getFirebaseFirestore().collection("users").doc(String(existing.id)).set({ role: "admin", loginMethod: "configured-admin", lastSignedIn: Timestamp2.now(), updatedAt: Timestamp2.now() }, { merge: true });
+    return await getUserById(existing.id);
+  }
+  const id = await nextId2("users");
+  const now = Timestamp2.now();
+  await getFirebaseFirestore().collection("users").doc(String(id)).create({ id, openId, name: "ProctorX Administrator", email: null, emailVerifiedAt: null, loginMethod: "configured-admin", role: "admin", createdAt: now, updatedAt: now, lastSignedIn: now });
+  await getFirebaseFirestore().collection("userLookup").doc("openId").collection("entries").doc(lookupId(openId)).set({ userId: id });
+  return await getUserById(id);
+}
+async function listManagedUsers() {
+  const snapshot = await getFirebaseFirestore().collection("users").orderBy("createdAt", "desc").get();
+  return snapshot.docs.map((document) => {
+    const data = document.data();
+    return { ...presentUser(data), fullName: data.profile?.fullName ?? null, collegeName: data.profile?.collegeName ?? null, rollNumber: data.profile?.rollNumber ?? null };
+  });
+}
+async function updateManagedUser(actorUserId, input) {
+  const db = getFirebaseFirestore();
+  const ref = db.collection("users").doc(String(input.userId));
+  const snapshot = await ref.get();
+  if (!snapshot.exists) throw new Error("User record was not found.");
+  await ref.set({ name: input.fullName, role: input.role, profile: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null }, updatedAt: Timestamp2.now() }, { merge: true });
+  await db.collection("auditLogs").add({ actorUserId, action: "identity.updated", entityType: "user", entityId: input.userId, metadata: { role: input.role }, createdAt: Timestamp2.now() });
+  return getUserById(input.userId);
+}
+
 // server/db.ts
 var _db = null;
+function useFirestorePersistence() {
+  return isFirebaseAdminConfigured() && !process.env.DATABASE_URL;
+}
 async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -341,7 +854,8 @@ async function requireDb() {
   if (!db) throw new Error("Database connection is unavailable.");
   return db;
 }
-async function upsertUser(user) {
+async function upsertUser2(user) {
+  if (useFirestorePersistence()) return upsertUser(user);
   if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await requireDb();
   const values = { openId: user.openId };
@@ -358,18 +872,21 @@ async function upsertUser(user) {
   updateSet.role = values.role;
   await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
 }
-async function getUserByOpenId(openId) {
+async function getUserByOpenId2(openId) {
+  if (useFirestorePersistence()) return getUserByOpenId(openId);
   const db = await getDb();
   if (!db) return void 0;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
 }
-async function getStudentProfile(userId) {
+async function getStudentProfile2(userId) {
+  if (useFirestorePersistence()) return getStudentProfile(userId);
   const db = await requireDb();
   const profile = await db.select().from(studentProfiles).where(eq(studentProfiles.userId, userId)).limit(1);
   return profile[0] ?? null;
 }
-async function upsertStudentProfile(input) {
+async function upsertStudentProfile2(input) {
+  if (useFirestorePersistence()) return upsertStudentProfile(input);
   const db = await requireDb();
   await db.insert(studentProfiles).values(input).onDuplicateKeyUpdate({
     set: {
@@ -378,12 +895,13 @@ async function upsertStudentProfile(input) {
       rollNumber: input.rollNumber ?? null
     }
   });
-  return getStudentProfile(input.userId);
+  return getStudentProfile2(input.userId);
 }
-async function getStudentOverview(userId) {
+async function getStudentOverview2(userId) {
+  if (useFirestorePersistence()) return getStudentOverview(userId);
   const db = await requireDb();
   const [profile, availableExams, attempts] = await Promise.all([
-    getStudentProfile(userId),
+    getStudentProfile2(userId),
     db.select({
       id: exams.id,
       title: exams.title,
@@ -410,7 +928,12 @@ async function getStudentOverview(userId) {
   ]);
   return { profile, availableExams, attempts };
 }
-async function startExamAttempt(userId, examId) {
+async function startExamAttempt2(userId, examId) {
+  if (useFirestorePersistence()) {
+    const created2 = await startExamAttempt(userId, examId);
+    await writeAuditLog(userId, "attempt.started", "examAttempt", created2.id, { examId });
+    return created2;
+  }
   const db = await requireDb();
   const [exam] = await db.select().from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam || !["scheduled", "live"].includes(exam.status)) throw new Error("This exam is not available.");
@@ -423,10 +946,11 @@ async function startExamAttempt(userId, examId) {
   const priorAttempts = await db.select({ id: examAttempts.id }).from(examAttempts).where(and(eq(examAttempts.userId, userId), eq(examAttempts.examId, examId)));
   if (priorAttempts.length >= exam.maxAttempts) throw new Error("The maximum number of attempts has been reached.");
   const [created] = await db.insert(examAttempts).values({ examId, userId }).$returningId();
-  await writeAuditLog(userId, "attempt.started", "examAttempt", created.id, { examId });
+  await writeAuditLog2(userId, "attempt.started", "examAttempt", created.id, { examId });
   return created;
 }
-async function getStudentAttempt(userId, attemptId) {
+async function getStudentAttempt2(userId, attemptId) {
+  if (useFirestorePersistence()) return getStudentAttempt(userId, attemptId);
   const db = await requireDb();
   const [attempt] = await db.select({
     id: examAttempts.id,
@@ -462,7 +986,8 @@ async function getStudentAttempt(userId, attemptId) {
   ]);
   return { attempt, questions: questionRows, answers: answerRows, events: eventRows };
 }
-async function saveAttemptAnswer(userId, input) {
+async function saveAttemptAnswer2(userId, input) {
+  if (useFirestorePersistence()) return saveAttemptAnswer(userId, input);
   const db = await requireDb();
   const [attempt] = await db.select({ id: examAttempts.id, examId: examAttempts.examId, status: examAttempts.status }).from(examAttempts).where(and(eq(examAttempts.id, input.attemptId), eq(examAttempts.userId, userId))).limit(1);
   if (!attempt || attempt.status !== "in_progress") throw new Error("This exam attempt is no longer editable.");
@@ -484,7 +1009,12 @@ async function saveAttemptAnswer(userId, input) {
   await db.update(examAttempts).set({ lastActivityAt: /* @__PURE__ */ new Date() }).where(eq(examAttempts.id, input.attemptId));
   return { success: true };
 }
-async function submitExamAttempt(userId, attemptId, reason) {
+async function submitExamAttempt2(userId, attemptId, reason) {
+  if (useFirestorePersistence()) {
+    const result2 = await submitExamAttempt(userId, attemptId, reason);
+    await writeAuditLog(userId, "attempt.submitted", "examAttempt", attemptId, { reason, score: result2.score, maxScore: result2.maxScore });
+    return result2;
+  }
   const db = await requireDb();
   const [attempt] = await db.select({ id: examAttempts.id, examId: examAttempts.examId, status: examAttempts.status }).from(examAttempts).where(and(eq(examAttempts.id, attemptId), eq(examAttempts.userId, userId))).limit(1);
   if (!attempt) throw new Error("Exam attempt was not found.");
@@ -515,10 +1045,11 @@ async function submitExamAttempt(userId, attemptId, reason) {
       lastActivityAt: /* @__PURE__ */ new Date()
     }).where(eq(examAttempts.id, attemptId));
   });
-  await writeAuditLog(userId, "attempt.submitted", "examAttempt", attemptId, { reason, ...result });
+  await writeAuditLog2(userId, "attempt.submitted", "examAttempt", attemptId, { reason, ...result });
   return { id: attemptId, ...result, reason };
 }
-async function reopenExamAttempt(adminUserId, attemptId, basis, note) {
+async function reopenExamAttempt2(adminUserId, attemptId, basis, note) {
+  if (useFirestorePersistence()) return reopenExamAttempt(adminUserId, attemptId, basis, note);
   const db = await requireDb();
   const [attempt] = await db.select({ id: examAttempts.id, status: examAttempts.status }).from(examAttempts).where(eq(examAttempts.id, attemptId)).limit(1);
   if (!attempt) throw new Error("Exam attempt was not found.");
@@ -529,7 +1060,7 @@ async function reopenExamAttempt(adminUserId, attemptId, basis, note) {
     await tx.delete(proctoringEvents).where(eq(proctoringEvents.attemptId, attemptId));
     await tx.update(examAttempts).set({ status: "in_progress", startedAt: now, submittedAt: null, submissionReason: null, score: null, maxScore: null, integrityRiskScore: 0, lastActivityAt: now }).where(eq(examAttempts.id, attemptId));
   });
-  await writeAuditLog(adminUserId, "attempt.reopened", "examAttempt", attemptId, {
+  await writeAuditLog2(adminUserId, "attempt.reopened", "examAttempt", attemptId, {
     basis,
     note,
     clearedIntegrityEventCount: priorEvents.length,
@@ -537,7 +1068,8 @@ async function reopenExamAttempt(adminUserId, attemptId, basis, note) {
   });
   return { id: attemptId, status: "in_progress" };
 }
-async function recordProctoringEvent(userId, input) {
+async function recordProctoringEvent2(userId, input) {
+  if (useFirestorePersistence()) return recordProctoringEvent(userId, input);
   const db = await requireDb();
   const [attempt] = await db.select({ id: examAttempts.id, status: examAttempts.status, proctoringConfig: exams.proctoringConfig }).from(examAttempts).innerJoin(exams, eq(examAttempts.examId, exams.id)).where(and(eq(examAttempts.id, input.attemptId), eq(examAttempts.userId, userId))).limit(1);
   if (!attempt || attempt.status !== "in_progress") throw new Error("This exam attempt is not accepting integrity events.");
@@ -549,7 +1081,8 @@ async function recordProctoringEvent(userId, input) {
   await db.update(examAttempts).set({ integrityRiskScore: eventCount, lastActivityAt: /* @__PURE__ */ new Date() }).where(eq(examAttempts.id, input.attemptId));
   return { eventCount, proctoringConfig: config };
 }
-async function listAdminExams() {
+async function listAdminExams2() {
+  if (useFirestorePersistence()) return listAdminExams();
   const db = await requireDb();
   return db.select({
     id: exams.id,
@@ -563,14 +1096,16 @@ async function listAdminExams() {
     createdAt: exams.createdAt
   }).from(exams).orderBy(desc(exams.createdAt));
 }
-async function getAdminExam(examId) {
+async function getAdminExam2(examId) {
+  if (useFirestorePersistence()) return getAdminExam(examId);
   const db = await requireDb();
   const [exam] = await db.select().from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam) return null;
   const examQuestions = await db.select().from(questions).where(eq(questions.examId, examId)).orderBy(asc(questions.orderIndex));
   return { exam, questions: examQuestions };
 }
-async function createExam(adminUserId, input) {
+async function createExam2(adminUserId, input) {
+  if (useFirestorePersistence()) return createExam(adminUserId, input);
   const db = await requireDb();
   const [created] = await db.insert(exams).values({
     createdByUserId: adminUserId,
@@ -588,10 +1123,11 @@ async function createExam(adminUserId, input) {
   await db.insert(questions).values(
     input.questions.map((question, index2) => ({ ...question, examId: created.id, orderIndex: index2 }))
   );
-  await writeAuditLog(adminUserId, "exam.created", "exam", created.id, { questionCount: input.questions.length });
+  await writeAuditLog2(adminUserId, "exam.created", "exam", created.id, { questionCount: input.questions.length });
   return { id: created.id };
 }
-async function updateExam(adminUserId, examId, input) {
+async function updateExam2(adminUserId, examId, input) {
+  if (useFirestorePersistence()) return updateExam(adminUserId, examId, input);
   const db = await requireDb();
   const [exam] = await db.select({ id: exams.id }).from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam) throw new Error("Assessment was not found.");
@@ -615,10 +1151,11 @@ async function updateExam(adminUserId, examId, input) {
     await tx.delete(questions).where(eq(questions.examId, examId));
     await tx.insert(questions).values(input.questions.map((question, index2) => ({ ...question, examId, orderIndex: index2 })));
   });
-  await writeAuditLog(adminUserId, "exam.updated", "exam", examId, { questionCount: input.questions.length });
+  await writeAuditLog2(adminUserId, "exam.updated", "exam", examId, { questionCount: input.questions.length });
   return { id: examId };
 }
-async function getAttemptReview(attemptId) {
+async function getAttemptReview2(attemptId) {
+  if (useFirestorePersistence()) return getAttemptReview(attemptId);
   const db = await requireDb();
   const [attempt] = await db.select({
     id: examAttempts.id,
@@ -649,7 +1186,8 @@ async function getAttemptReview(attemptId) {
   ]);
   return { attempt, answers, events };
 }
-async function getResultsExport() {
+async function getResultsExport2() {
+  if (useFirestorePersistence()) return getResultsExport();
   const db = await requireDb();
   return db.select({
     attemptId: examAttempts.id,
@@ -664,11 +1202,13 @@ async function getResultsExport() {
     integrityRiskScore: examAttempts.integrityRiskScore
   }).from(examAttempts).innerJoin(exams, eq(examAttempts.examId, exams.id)).innerJoin(users, eq(examAttempts.userId, users.id)).orderBy(desc(examAttempts.submittedAt));
 }
-async function writeAuditLog(actorUserId, action, entityType, entityId, metadata) {
+async function writeAuditLog2(actorUserId, action, entityType, entityId, metadata) {
+  if (useFirestorePersistence()) return writeAuditLog(actorUserId, action, entityType, entityId, metadata);
   const db = await requireDb();
   await db.insert(examAuditLogs).values({ actorUserId, action, entityType, entityId, metadata });
 }
-async function createLocalStudent(input) {
+async function createLocalStudent2(input) {
+  if (useFirestorePersistence()) return createLocalStudent(input);
   const db = await requireDb();
   const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
   if (existing[0]) throw new Error("An account already exists for this email address.");
@@ -680,22 +1220,26 @@ async function createLocalStudent(input) {
   });
   return created;
 }
-async function findLocalCredentialByEmail(email) {
+async function findLocalCredentialByEmail2(email) {
+  if (useFirestorePersistence()) return findLocalCredentialByEmail(email);
   const db = await requireDb();
   const [record] = await db.select({ userId: users.id, passwordHash: localCredentials.passwordHash, role: users.role, email: users.email, name: users.name, emailVerifiedAt: users.emailVerifiedAt }).from(users).innerJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.email, email)).limit(1);
   return record ?? null;
 }
-async function findLocalAccountByEmail(email) {
+async function findLocalAccountByEmail2(email) {
+  if (useFirestorePersistence()) return findLocalAccountByEmail(email);
   const db = await requireDb();
   const [account] = await db.select({ userId: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt, fullName: users.name }).from(users).innerJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.email, email)).limit(1);
   return account ?? null;
 }
-async function createAccountToken(userId, purpose, tokenHash, expiresAt) {
+async function createAccountToken2(userId, purpose, tokenHash, expiresAt) {
+  if (useFirestorePersistence()) return createAccountToken(userId, purpose, tokenHash, expiresAt);
   const db = await requireDb();
   const [created] = await db.insert(accountTokens).values({ userId, purpose, tokenHash, expiresAt }).$returningId();
   return created;
 }
-async function consumeAccountToken(tokenHash, purpose) {
+async function consumeAccountToken2(tokenHash, purpose) {
+  if (useFirestorePersistence()) return consumeAccountToken(tokenHash, purpose);
   const db = await requireDb();
   const [token] = await db.select().from(accountTokens).where(and(eq(accountTokens.tokenHash, tokenHash), eq(accountTokens.purpose, purpose))).limit(1);
   if (!token || token.consumedAt || token.expiresAt <= /* @__PURE__ */ new Date()) return null;
@@ -703,34 +1247,40 @@ async function consumeAccountToken(tokenHash, purpose) {
   if (!didConsumeTokenExactlyOnce(getAffectedRowCount(result))) return null;
   return token;
 }
-async function markEmailVerified(userId) {
+async function markEmailVerified2(userId) {
+  if (useFirestorePersistence()) return markEmailVerified(userId);
   const db = await requireDb();
   await db.update(users).set({ emailVerifiedAt: /* @__PURE__ */ new Date() }).where(eq(users.id, userId));
 }
-async function replaceLocalPassword(userId, passwordHash) {
+async function replaceLocalPassword2(userId, passwordHash) {
+  if (useFirestorePersistence()) return replaceLocalPassword(userId, passwordHash);
   const db = await requireDb();
   await db.update(localCredentials).set({ passwordHash }).where(eq(localCredentials.userId, userId));
 }
-async function getUserById(userId) {
+async function getUserById2(userId) {
+  if (useFirestorePersistence()) return getUserById(userId);
   const db = await requireDb();
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   return user ?? null;
 }
-async function touchUserSignIn(userId) {
+async function touchUserSignIn2(userId) {
+  if (useFirestorePersistence()) return touchUserSignIn(userId);
   const db = await requireDb();
   await db.update(users).set({ lastSignedIn: /* @__PURE__ */ new Date() }).where(eq(users.id, userId));
 }
-async function ensureConfiguredAdmin(openId) {
+async function ensureConfiguredAdmin2(openId) {
+  if (useFirestorePersistence()) return ensureConfiguredAdmin(openId);
   const db = await requireDb();
   const [existing] = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   if (existing) {
     await db.update(users).set({ role: "admin", loginMethod: "configured-admin", lastSignedIn: /* @__PURE__ */ new Date() }).where(eq(users.id, existing.id));
-    return await getUserById(existing.id);
+    return await getUserById2(existing.id);
   }
   const [created] = await db.insert(users).values({ openId, name: "ProctorX Administrator", email: null, loginMethod: "configured-admin", role: "admin" }).$returningId();
-  return await getUserById(created.id);
+  return await getUserById2(created.id);
 }
-async function listManagedUsers() {
+async function listManagedUsers2() {
+  if (useFirestorePersistence()) return listManagedUsers();
   const db = await requireDb();
   return db.select({
     id: users.id,
@@ -745,7 +1295,8 @@ async function listManagedUsers() {
     rollNumber: studentProfiles.rollNumber
   }).from(users).leftJoin(studentProfiles, eq(studentProfiles.userId, users.id)).orderBy(desc(users.createdAt));
 }
-async function updateManagedUser(actorUserId, input) {
+async function updateManagedUser2(actorUserId, input) {
+  if (useFirestorePersistence()) return updateManagedUser(actorUserId, input);
   const db = await requireDb();
   const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.userId)).limit(1);
   if (!user) throw new Error("User record was not found.");
@@ -753,17 +1304,18 @@ async function updateManagedUser(actorUserId, input) {
     await tx.update(users).set({ name: input.fullName, role: input.role }).where(eq(users.id, input.userId));
     await tx.insert(studentProfiles).values({ userId: input.userId, fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null }).onDuplicateKeyUpdate({ set: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null } });
   });
-  await writeAuditLog(actorUserId, "identity.updated", "user", input.userId, { role: input.role });
-  return getUserById(input.userId);
+  await writeAuditLog2(actorUserId, "identity.updated", "user", input.userId, { role: input.role });
+  return getUserById2(input.userId);
 }
-async function getAttemptOwner(attemptId) {
+async function getAttemptOwner2(attemptId) {
   const db = await requireDb();
   const [attempt] = await db.select({ id: examAttempts.id, userId: examAttempts.userId, status: examAttempts.status, examTitle: exams.title }).from(examAttempts).innerJoin(exams, eq(examAttempts.examId, exams.id)).where(eq(examAttempts.id, attemptId)).limit(1);
   return attempt ?? null;
 }
-async function sendSupportMessage(input) {
+async function sendSupportMessage2(input) {
+  if (useFirestorePersistence()) return sendSupportMessage(input);
   const db = await requireDb();
-  const attempt = await getAttemptOwner(input.attemptId);
+  const attempt = await getAttemptOwner2(input.attemptId);
   if (!attempt) throw new Error("Exam attempt was not found.");
   if (!canSendSupportMessage({ requesterUserId: input.senderUserId, attemptOwnerUserId: attempt.userId, attemptStatus: attempt.status, senderRole: input.senderRole })) {
     throw new Error("Support chat is available only during your active exam attempt.");
@@ -771,9 +1323,10 @@ async function sendSupportMessage(input) {
   const [created] = await db.insert(supportMessages).values(input).$returningId();
   return created;
 }
-async function getSupportMessages(attemptId, requesterUserId, isAdmin) {
+async function getSupportMessages2(attemptId, requesterUserId, isAdmin) {
+  if (useFirestorePersistence()) return getSupportMessages(attemptId, requesterUserId, isAdmin);
   const db = await requireDb();
-  const attempt = await getAttemptOwner(attemptId);
+  const attempt = await getAttemptOwner2(attemptId);
   if (!attempt || !canAccessAttemptReport({ requesterUserId, attemptOwnerUserId: attempt.userId, isAdmin })) throw new Error("Support conversation was not found.");
   if (isAdmin) {
     await db.update(supportMessages).set({ readAt: /* @__PURE__ */ new Date() }).where(and(eq(supportMessages.attemptId, attemptId), eq(supportMessages.senderRole, "student")));
@@ -781,7 +1334,8 @@ async function getSupportMessages(attemptId, requesterUserId, isAdmin) {
   const messages = await db.select({ id: supportMessages.id, senderUserId: supportMessages.senderUserId, senderRole: supportMessages.senderRole, message: supportMessages.message, createdAt: supportMessages.createdAt, readAt: supportMessages.readAt, senderName: users.name }).from(supportMessages).innerJoin(users, eq(supportMessages.senderUserId, users.id)).where(eq(supportMessages.attemptId, attemptId)).orderBy(asc(supportMessages.createdAt));
   return { attempt, messages };
 }
-async function listSupportInbox() {
+async function listSupportInbox2() {
+  if (useFirestorePersistence()) return listSupportInbox();
   const db = await requireDb();
   return db.select({
     id: supportMessages.id,
@@ -795,16 +1349,19 @@ async function listSupportInbox() {
     studentEmail: users.email
   }).from(supportMessages).innerJoin(examAttempts, eq(supportMessages.attemptId, examAttempts.id)).innerJoin(exams, eq(examAttempts.examId, exams.id)).innerJoin(users, eq(examAttempts.userId, users.id)).orderBy(desc(supportMessages.createdAt)).limit(100);
 }
-async function createAdminNotification(input) {
+async function createAdminNotification2(input) {
+  if (useFirestorePersistence()) return createAdminNotification(input);
   const db = await requireDb();
   const [created] = await db.insert(adminNotifications).values({ ...input, relatedAttemptId: input.relatedAttemptId ?? null }).$returningId();
   return created;
 }
-async function listAdminNotifications() {
+async function listAdminNotifications2() {
+  if (useFirestorePersistence()) return listAdminNotifications();
   const db = await requireDb();
   return db.select().from(adminNotifications).orderBy(desc(adminNotifications.createdAt)).limit(80);
 }
-async function markAdminNotificationRead(notificationId) {
+async function markAdminNotificationRead2(notificationId) {
+  if (useFirestorePersistence()) return markAdminNotificationRead(notificationId);
   const db = await requireDb();
   await db.update(adminNotifications).set({ readAt: /* @__PURE__ */ new Date() }).where(eq(adminNotifications.id, notificationId));
 }
@@ -1037,18 +1594,18 @@ var SDKServer = class {
     }
     const sessionUserId = session.openId;
     const signedInAt = /* @__PURE__ */ new Date();
-    let user = await getUserByOpenId(sessionUserId);
+    let user = await getUserByOpenId2(sessionUserId);
     if (!user) {
       try {
         const userInfo = await this.getUserInfoWithJwt(sessionToken ?? "");
-        await upsertUser({
+        await upsertUser2({
           openId: userInfo.openId,
           name: userInfo.name || null,
           email: userInfo.email ?? null,
           loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
           lastSignedIn: signedInAt
         });
-        user = await getUserByOpenId(userInfo.openId);
+        user = await getUserByOpenId2(userInfo.openId);
       } catch (error) {
         console.error("[Auth] Failed to sync user from OAuth:", error);
         throw ForbiddenError("Failed to sync user info");
@@ -1057,7 +1614,7 @@ var SDKServer = class {
     if (!user) {
       throw ForbiddenError("User not found");
     }
-    await upsertUser({
+    await upsertUser2({
       openId: user.openId,
       lastSignedIn: signedInAt
     });
@@ -1110,7 +1667,7 @@ function registerOAuthRoutes(app) {
         res.status(400).json({ error: "openId missing from user info" });
         return;
       }
-      await upsertUser({
+      await upsertUser2({
         openId: userInfo.openId,
         name: userInfo.name || null,
         email: userInfo.email ?? null,
@@ -1206,7 +1763,7 @@ async function createContext(opts) {
   let user = null;
   try {
     const localUserId = await getLocalSessionUserId(opts.req);
-    user = localUserId ? await getUserById(localUserId) : await sdk.authenticateRequest(opts.req);
+    user = localUserId ? await getUserById2(localUserId) : await sdk.authenticateRequest(opts.req);
   } catch (error) {
     user = null;
   }
@@ -1347,6 +1904,18 @@ var systemRouter = router({
   ).query(() => ({
     ok: true
   })),
+  firebaseReadiness: adminProcedure.query(async () => {
+    if (!isFirebaseAdminConfigured()) {
+      return { configured: false, reachable: false };
+    }
+    try {
+      await getFirebaseFirestore().listCollections();
+      return { configured: true, reachable: true };
+    } catch (error) {
+      console.error("[Firebase] Admin readiness check failed", error);
+      return { configured: true, reachable: false };
+    }
+  }),
   notifyOwner: adminProcedure.input(
     z.object({
       title: z.string().min(1, "title is required"),
@@ -1366,7 +1935,7 @@ import { randomUUID } from "node:crypto";
 import { z as z2 } from "zod";
 
 // server/localAuth.ts
-import { createHash as createHash2, randomBytes as randomBytes2, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes2, scryptSync, timingSafeEqual } from "node:crypto";
 function equalSecret(value, configured) {
   const left = Buffer.from(value);
   const right = Buffer.from(configured);
@@ -1391,7 +1960,7 @@ function verifyConfiguredAdminCredentials(loginId, password) {
   return equalSecret(loginId, configuredId) && equalSecret(password, configuredPassword);
 }
 function getConfiguredAdminOpenId(loginId) {
-  return `admin:${createHash2("sha256").update(loginId).digest("hex").slice(0, 56)}`;
+  return `admin:${createHash3("sha256").update(loginId).digest("hex").slice(0, 56)}`;
 }
 
 // server/supportRealtime.ts
@@ -1437,7 +2006,7 @@ var questionInputSchema = z2.object({
 });
 async function sendAccountLink(input) {
   const token = createAccountTokenValue();
-  await createAccountToken(input.userId, input.purpose, hashAccountToken(token), getTokenExpiry(input.purpose));
+  await createAccountToken2(input.userId, input.purpose, hashAccountToken(token), getTokenExpiry(input.purpose));
   const path = input.purpose === "verify_email" ? "/verify-email" : "/reset-password";
   return deliverAccountLink({
     to: input.email,
@@ -1467,66 +2036,66 @@ var proctorxRouter = router({
   credentials: router({
     signUp: publicProcedure.input(z2.object({ fullName: z2.string().trim().min(2).max(255), email: z2.string().trim().email().max(320), password: z2.string().min(10).max(128), collegeName: z2.string().trim().max(255).nullable().optional(), rollNumber: z2.string().trim().max(128).nullable().optional(), origin: z2.string().url() })).mutation(async ({ ctx, input }) => {
       const email = input.email.toLowerCase();
-      const user = await createLocalStudent({ ...input, email, openId: `local:${randomUUID()}`, passwordHash: hashPassword(input.password) });
+      const user = await createLocalStudent2({ ...input, email, openId: `local:${randomUUID()}`, passwordHash: hashPassword(input.password) });
       const verificationDelivery = await sendAccountLink({ email, userId: user.id, purpose: "verify_email", origin: input.origin });
       return { id: user.id, verificationDelivery };
     }),
     signIn: publicProcedure.input(z2.object({ email: z2.string().trim().email().max(320), password: z2.string().min(1).max(128) })).mutation(async ({ ctx, input }) => {
-      const credential = await findLocalCredentialByEmail(input.email.toLowerCase());
+      const credential = await findLocalCredentialByEmail2(input.email.toLowerCase());
       if (!credential || !verifyPassword(input.password, credential.passwordHash)) throw new TRPCError3({ code: "UNAUTHORIZED", message: "Email or password is incorrect." });
       if (!credential.emailVerifiedAt) throw new TRPCError3({ code: "FORBIDDEN", message: "Verify your email before signing in." });
-      await touchUserSignIn(credential.userId);
+      await touchUserSignIn2(credential.userId);
       await issueLocalSession(ctx.req, ctx.res, credential.userId);
       return { id: credential.userId, role: credential.role };
     }),
     adminSignIn: publicProcedure.input(z2.object({ loginId: z2.string().trim().min(1).max(255), password: z2.string().min(1).max(255) })).mutation(async ({ ctx, input }) => {
       if (!verifyConfiguredAdminCredentials(input.loginId, input.password)) throw new TRPCError3({ code: "UNAUTHORIZED", message: "Administrator ID or password is incorrect." });
-      const admin = await ensureConfiguredAdmin(getConfiguredAdminOpenId(input.loginId));
+      const admin = await ensureConfiguredAdmin2(getConfiguredAdminOpenId(input.loginId));
       await issueLocalSession(ctx.req, ctx.res, admin.id);
       return { id: admin.id, role: "admin" };
     }),
     requestVerification: publicProcedure.input(z2.object({ email: z2.string().trim().email().max(320), origin: z2.string().url() })).mutation(async ({ input }) => {
-      const account = await findLocalAccountByEmail(input.email.toLowerCase());
+      const account = await findLocalAccountByEmail2(input.email.toLowerCase());
       if (!account || !account.email || account.emailVerifiedAt) return { accepted: true, delivery: { mode: "sent" } };
       return { accepted: true, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "verify_email", origin: input.origin }) };
     }),
     verifyEmail: publicProcedure.input(z2.object({ token: z2.string().min(32).max(256) })).mutation(async ({ input }) => {
-      const token = await consumeAccountToken(hashAccountToken(input.token), "verify_email");
+      const token = await consumeAccountToken2(hashAccountToken(input.token), "verify_email");
       if (!token) throw new TRPCError3({ code: "BAD_REQUEST", message: "This verification link is invalid, expired, or has already been used." });
-      await markEmailVerified(token.userId);
+      await markEmailVerified2(token.userId);
       return { verified: true };
     }),
     requestPasswordReset: publicProcedure.input(z2.object({ email: z2.string().trim().email().max(320), origin: z2.string().url() })).mutation(async ({ input }) => {
-      const account = await findLocalAccountByEmail(input.email.toLowerCase());
+      const account = await findLocalAccountByEmail2(input.email.toLowerCase());
       if (!account || !account.email) return { accepted: true, delivery: { mode: "sent" } };
       return { accepted: true, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "reset_password", origin: input.origin }) };
     }),
     resetPassword: publicProcedure.input(z2.object({ token: z2.string().min(32).max(256), password: z2.string().min(10).max(128) })).mutation(async ({ ctx, input }) => {
-      const token = await consumeAccountToken(hashAccountToken(input.token), "reset_password");
+      const token = await consumeAccountToken2(hashAccountToken(input.token), "reset_password");
       if (!token) throw new TRPCError3({ code: "BAD_REQUEST", message: "This reset link is invalid, expired, or has already been used." });
-      await replaceLocalPassword(token.userId, hashPassword(input.password));
+      await replaceLocalPassword2(token.userId, hashPassword(input.password));
       await issueLocalSession(ctx.req, ctx.res, token.userId);
       return { reset: true };
     })
   }),
   profile: router({
-    get: protectedProcedure.query(({ ctx }) => getStudentProfile(ctx.user.id)),
+    get: protectedProcedure.query(({ ctx }) => getStudentProfile2(ctx.user.id)),
     save: protectedProcedure.input(
       z2.object({
         fullName: z2.string().trim().min(2).max(255),
         collegeName: z2.string().trim().max(255).nullable().optional(),
         rollNumber: z2.string().trim().max(128).nullable().optional()
       })
-    ).mutation(({ ctx, input }) => upsertStudentProfile({ userId: ctx.user.id, ...input }))
+    ).mutation(({ ctx, input }) => upsertStudentProfile2({ userId: ctx.user.id, ...input }))
   }),
   student: router({
-    overview: protectedProcedure.query(({ ctx }) => getStudentOverview(ctx.user.id)),
+    overview: protectedProcedure.query(({ ctx }) => getStudentOverview2(ctx.user.id)),
     startAttempt: protectedProcedure.input(z2.object({ examId: z2.number().int().positive() })).mutation(async ({ ctx, input }) => {
-      const attempt = await startExamAttempt(ctx.user.id, input.examId);
+      const attempt = await startExamAttempt2(ctx.user.id, input.examId);
       return { attemptId: attempt.id };
     }),
     getAttempt: protectedProcedure.input(z2.object({ attemptId: z2.number().int().positive() })).query(async ({ ctx, input }) => {
-      const attempt = await getStudentAttempt(ctx.user.id, input.attemptId);
+      const attempt = await getStudentAttempt2(ctx.user.id, input.attemptId);
       if (!attempt) throw new TRPCError3({ code: "NOT_FOUND", message: "Exam attempt was not found." });
       return attempt;
     }),
@@ -1537,13 +2106,13 @@ var proctorxRouter = router({
         selectedOption: answerOptionSchema.nullable(),
         markedForReview: z2.boolean()
       })
-    ).mutation(({ ctx, input }) => saveAttemptAnswer(ctx.user.id, input)),
+    ).mutation(({ ctx, input }) => saveAttemptAnswer2(ctx.user.id, input)),
     submitAttempt: protectedProcedure.input(
       z2.object({
         attemptId: z2.number().int().positive(),
         reason: z2.enum(["manual", "timeout", "integrity_threshold"]).default("manual")
       })
-    ).mutation(({ ctx, input }) => submitExamAttempt(ctx.user.id, input.attemptId, input.reason))
+    ).mutation(({ ctx, input }) => submitExamAttempt2(ctx.user.id, input.attemptId, input.reason))
   }),
   proctoring: router({
     logEvent: protectedProcedure.input(
@@ -1554,7 +2123,7 @@ var proctorxRouter = router({
         metadata: z2.record(z2.string(), z2.unknown()).optional()
       })
     ).mutation(async ({ ctx, input }) => {
-      const outcome = await recordProctoringEvent(ctx.user.id, input);
+      const outcome = await recordProctoringEvent2(ctx.user.id, input);
       const config = normalizeProctoringConfig(outcome.proctoringConfig);
       const escalation = getIntegrityEscalation(outcome.eventCount, config);
       const immediateSubmission = requiresImmediateIntegritySubmission(input.eventType) && (input.eventType === "tab_hidden" && config.immediateSubmitOnFocusLoss || input.eventType === "audio_activity" && config.audioMonitoringEnabled && config.immediateSubmitOnAudioActivity);
@@ -1562,51 +2131,51 @@ var proctorxRouter = router({
       if (shouldAutoSubmit) {
         const title = immediateSubmission ? input.eventType === "audio_activity" ? "Assessment submitted after audio activity" : "Assessment submitted after focus loss" : "High-risk integrity threshold";
         const body = immediateSubmission ? input.eventType === "audio_activity" ? `Attempt #${input.attemptId} was automatically submitted after configured sustained audio activity. This signal does not identify a speaker; review the recorded context before taking any further action.` : `Attempt #${input.attemptId} was automatically submitted after the browser lost focus or was minimized. Review the recorded context before taking any further action.` : `Attempt #${input.attemptId} reached its configured automatic-submission threshold.`;
-        await createAdminNotification({ type: "high_risk_integrity", title, body, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
+        await createAdminNotification2({ type: "high_risk_integrity", title, body, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
         notifyAdministrators();
       }
       if (shouldAutoSubmit) {
-        const result = await submitExamAttempt(ctx.user.id, input.attemptId, "integrity_threshold");
+        const result = await submitExamAttempt2(ctx.user.id, input.attemptId, "integrity_threshold");
         return { ...escalation, shouldWarn: true, shouldAutoSubmit: true, submitted: true, result };
       }
       return { ...escalation, submitted: false };
     })
   }),
   support: router({
-    list: protectedProcedure.input(z2.object({ attemptId: z2.number().int().positive() })).query(({ ctx, input }) => getSupportMessages(input.attemptId, ctx.user.id, ctx.user.role === "admin")),
+    list: protectedProcedure.input(z2.object({ attemptId: z2.number().int().positive() })).query(({ ctx, input }) => getSupportMessages2(input.attemptId, ctx.user.id, ctx.user.role === "admin")),
     send: protectedProcedure.input(z2.object({ attemptId: z2.number().int().positive(), message: z2.string().trim().min(1).max(1500) })).mutation(async ({ ctx, input }) => {
-      const result = await sendSupportMessage({ ...input, senderUserId: ctx.user.id, senderRole: ctx.user.role === "admin" ? "admin" : "student" });
+      const result = await sendSupportMessage2({ ...input, senderUserId: ctx.user.id, senderRole: ctx.user.role === "admin" ? "admin" : "student" });
       notifySupportConversation(input.attemptId);
       if (ctx.user.role !== "admin") {
-        await createAdminNotification({ type: "support_message", title: "New technical support request", body: `A student sent a technical support message for attempt #${input.attemptId}.`, destination: "/admin/support", relatedAttemptId: input.attemptId });
+        await createAdminNotification2({ type: "support_message", title: "New technical support request", body: `A student sent a technical support message for attempt #${input.attemptId}.`, destination: "/admin/support", relatedAttemptId: input.attemptId });
         notifyAdministrators();
       }
       return result;
     }),
-    inbox: adminProcedure.query(() => listSupportInbox())
+    inbox: adminProcedure.query(() => listSupportInbox2())
   }),
   notifications: router({
-    list: adminProcedure.query(() => listAdminNotifications()),
-    markRead: adminProcedure.input(z2.object({ notificationId: z2.number().int().positive() })).mutation(({ input }) => markAdminNotificationRead(input.notificationId))
+    list: adminProcedure.query(() => listAdminNotifications2()),
+    markRead: adminProcedure.input(z2.object({ notificationId: z2.number().int().positive() })).mutation(({ input }) => markAdminNotificationRead2(input.notificationId))
   }),
   admin: router({
-    listExams: adminProcedure.query(() => listAdminExams()),
-    createExam: adminProcedure.input(examInputSchema).mutation(({ ctx, input }) => createExam(ctx.user.id, input)),
+    listExams: adminProcedure.query(() => listAdminExams2()),
+    createExam: adminProcedure.input(examInputSchema).mutation(({ ctx, input }) => createExam2(ctx.user.id, input)),
     getExam: adminProcedure.input(z2.object({ examId: z2.number().int().positive() })).query(async ({ input }) => {
-      const exam = await getAdminExam(input.examId);
+      const exam = await getAdminExam2(input.examId);
       if (!exam) throw new TRPCError3({ code: "NOT_FOUND", message: "Assessment was not found." });
       return exam;
     }),
-    updateExam: adminProcedure.input(z2.object({ examId: z2.number().int().positive(), updates: examInputSchema })).mutation(({ ctx, input }) => updateExam(ctx.user.id, input.examId, input.updates)),
+    updateExam: adminProcedure.input(z2.object({ examId: z2.number().int().positive(), updates: examInputSchema })).mutation(({ ctx, input }) => updateExam2(ctx.user.id, input.examId, input.updates)),
     getAttemptReview: adminProcedure.input(z2.object({ attemptId: z2.number().int().positive() })).query(async ({ input }) => {
-      const review = await getAttemptReview(input.attemptId);
+      const review = await getAttemptReview2(input.attemptId);
       if (!review) throw new TRPCError3({ code: "NOT_FOUND", message: "Exam attempt was not found." });
       return review;
     }),
-    reopenAttempt: adminProcedure.input(z2.object({ attemptId: z2.number().int().positive(), basis: z2.enum(["technical_failure", "approved_accommodation"]), note: z2.string().trim().min(5).max(1e3) })).mutation(({ ctx, input }) => reopenExamAttempt(ctx.user.id, input.attemptId, input.basis, input.note)),
-    listUsers: adminProcedure.query(() => listManagedUsers()),
-    updateUser: adminProcedure.input(z2.object({ userId: z2.number().int().positive(), fullName: z2.string().trim().min(2).max(255), collegeName: z2.string().trim().max(255).nullable().optional(), rollNumber: z2.string().trim().max(128).nullable().optional(), role: z2.enum(["user", "admin"]) })).mutation(({ ctx, input }) => updateManagedUser(ctx.user.id, input)),
-    resultsExport: adminProcedure.query(() => getResultsExport())
+    reopenAttempt: adminProcedure.input(z2.object({ attemptId: z2.number().int().positive(), basis: z2.enum(["technical_failure", "approved_accommodation"]), note: z2.string().trim().min(5).max(1e3) })).mutation(({ ctx, input }) => reopenExamAttempt2(ctx.user.id, input.attemptId, input.basis, input.note)),
+    listUsers: adminProcedure.query(() => listManagedUsers2()),
+    updateUser: adminProcedure.input(z2.object({ userId: z2.number().int().positive(), fullName: z2.string().trim().min(2).max(255), collegeName: z2.string().trim().max(255).nullable().optional(), rollNumber: z2.string().trim().max(128).nullable().optional(), role: z2.enum(["user", "admin"]) })).mutation(({ ctx, input }) => updateManagedUser2(ctx.user.id, input)),
+    resultsExport: adminProcedure.query(() => getResultsExport2())
   })
 });
 

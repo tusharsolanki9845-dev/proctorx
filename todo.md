@@ -106,6 +106,7 @@
 - [ ] Assess Firebase Firestore and Firebase Authentication compatibility with the existing MySQL/tRPC ProctorX data model before any provider-level provisioning.
 - [ ] Obtain and present Firebase/Google Cloud project cost and billing requirements before creating production resources.
 - [ ] Provision Firebase resources only after the compatibility and provider-cost gates are satisfied, then integrate them without exposing credentials.
+- [ ] Complete the production persistence migration using only Firebase Spark-plan Firestore and Firebase Email/Password; do not enable Blaze billing, Firebase SQL Connect, Cloud SQL, or any paid service.
 - [x] Configure the approved Firebase production data service in an India location suitable for nationwide examination delivery, with locked production access rules.
 - [x] Define a reviewed Firestore document model and server-only authorization boundary that preserves ProctorX’s relational exam, attempt, audit, report, support, and notification semantics.
 - [ ] Replace the Vercel production persistence path with a Firebase Admin-backed Firestore adapter while retaining testable local compatibility until every supported workflow is migrated.

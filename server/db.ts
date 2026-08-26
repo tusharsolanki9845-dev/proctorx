@@ -19,8 +19,15 @@ import { calculateExamScore, normalizeProctoringConfig, type AnswerOption } from
 import { canAccessAttemptReport, canSendSupportMessage } from "../shared/accessControl";
 import { didConsumeTokenExactlyOnce, getAffectedRowCount } from "./accountSecurity";
 import { ENV } from "./_core/env";
+import { isFirebaseAdminConfigured } from "./firebaseAdmin";
+import * as firestoreExam from "./firestoreExamStore";
+import * as firestoreIdentity from "./firestoreIdentityStore";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+
+function useFirestorePersistence() {
+  return isFirebaseAdminConfigured() && !process.env.DATABASE_URL;
+}
 
 /** Test-only seam for exercising persistence helpers without a live database. */
 export function __setDbForTests(database: unknown) {
@@ -46,6 +53,7 @@ async function requireDb() {
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
+  if (useFirestorePersistence()) return firestoreIdentity.upsertUser(user);
   if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await requireDb();
   const values: InsertUser = { openId: user.openId };
@@ -64,6 +72,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 }
 
 export async function getUserByOpenId(openId: string) {
+  if (useFirestorePersistence()) return firestoreIdentity.getUserByOpenId(openId);
   const db = await getDb();
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
@@ -71,6 +80,7 @@ export async function getUserByOpenId(openId: string) {
 }
 
 export async function getStudentProfile(userId: number) {
+  if (useFirestorePersistence()) return firestoreIdentity.getStudentProfile(userId);
   const db = await requireDb();
   const profile = await db.select().from(studentProfiles).where(eq(studentProfiles.userId, userId)).limit(1);
   return profile[0] ?? null;
@@ -82,6 +92,7 @@ export async function upsertStudentProfile(input: {
   collegeName?: string | null;
   rollNumber?: string | null;
 }) {
+  if (useFirestorePersistence()) return firestoreIdentity.upsertStudentProfile(input);
   const db = await requireDb();
   await db
     .insert(studentProfiles)
@@ -96,7 +107,33 @@ export async function upsertStudentProfile(input: {
   return getStudentProfile(input.userId);
 }
 
-export async function getStudentOverview(userId: number) {
+export async function getStudentOverview(userId: number): Promise<{
+  profile: Awaited<ReturnType<typeof getStudentProfile>>;
+  availableExams: Array<{
+    id: number;
+    title: string;
+    description: string | null;
+    durationSeconds: number;
+    startsAt: Date | null;
+    endsAt: Date | null;
+    status: string;
+    proctoringConfig: unknown;
+  }>;
+  attempts: Array<{
+    id: number;
+    examId: number;
+    examTitle: string;
+    status: string;
+    score: number | null;
+    maxScore: number | null;
+    startedAt: Date;
+    submittedAt: Date | null;
+    submissionReason: string | null;
+    integrityRiskScore: number;
+    releaseResultsImmediately: number;
+  }>;
+}> {
+  if (useFirestorePersistence()) return firestoreExam.getStudentOverview(userId) as any;
   const db = await requireDb();
   const [profile, availableExams, attempts] = await Promise.all([
     getStudentProfile(userId),
@@ -139,6 +176,11 @@ export async function getStudentOverview(userId: number) {
 }
 
 export async function startExamAttempt(userId: number, examId: number) {
+  if (useFirestorePersistence()) {
+    const created = await firestoreExam.startExamAttempt(userId, examId);
+    await firestoreExam.writeAuditLog(userId, "attempt.started", "examAttempt", created.id, { examId });
+    return created as any;
+  }
   const db = await requireDb();
   const [exam] = await db.select().from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam || !["scheduled", "live"].includes(exam.status)) throw new Error("This exam is not available.");
@@ -162,7 +204,29 @@ export async function startExamAttempt(userId: number, examId: number) {
   return created!;
 }
 
-export async function getStudentAttempt(userId: number, attemptId: number) {
+export async function getStudentAttempt(userId: number, attemptId: number): Promise<{
+  attempt: {
+    id: number;
+    examId: number;
+    status: string;
+    startedAt: Date;
+    submittedAt: Date | null;
+    submissionReason: string | null;
+    score: number | null;
+    maxScore: number | null;
+    integrityRiskScore: number;
+    title: string;
+    description: string | null;
+    durationSeconds: number;
+    endsAt: Date | null;
+    releaseResultsImmediately: number;
+    proctoringConfig: unknown;
+  };
+  questions: Array<{ id: number; prompt: string; optionA: string; optionB: string; optionC: string; optionD: string; points: number; orderIndex: number }>;
+  answers: Array<{ id: number; attemptId: number; questionId: number; selectedOption: AnswerOption | null; markedForReview: number; isCorrect: number | null; answeredAt: Date | null }>;
+  events: Array<{ id: string | number; eventType: string; severity: string; detectedAt: Date; durationMs: number }>;
+} | null> {
+  if (useFirestorePersistence()) return firestoreExam.getStudentAttempt(userId, attemptId) as any;
   const db = await requireDb();
   const [attempt] = await db
     .select({
@@ -216,6 +280,7 @@ export async function saveAttemptAnswer(
   userId: number,
   input: { attemptId: number; questionId: number; selectedOption: AnswerOption | null; markedForReview: boolean }
 ) {
+  if (useFirestorePersistence()) return firestoreExam.saveAttemptAnswer(userId, input) as any;
   const db = await requireDb();
   const [attempt] = await db
     .select({ id: examAttempts.id, examId: examAttempts.examId, status: examAttempts.status })
@@ -254,6 +319,11 @@ export async function submitExamAttempt(
   attemptId: number,
   reason: "manual" | "timeout" | "integrity_threshold" | "admin_action"
 ) {
+  if (useFirestorePersistence()) {
+    const result = await firestoreExam.submitExamAttempt(userId, attemptId, reason);
+    await firestoreExam.writeAuditLog(userId, "attempt.submitted", "examAttempt", attemptId, { reason, score: result.score, maxScore: result.maxScore });
+    return result as any;
+  }
   const db = await requireDb();
   const [attempt] = await db
     .select({ id: examAttempts.id, examId: examAttempts.examId, status: examAttempts.status })
@@ -307,6 +377,7 @@ export async function reopenExamAttempt(
   basis: "technical_failure" | "approved_accommodation",
   note: string
 ) {
+  if (useFirestorePersistence()) return firestoreExam.reopenExamAttempt(adminUserId, attemptId, basis, note) as never;
   const db = await requireDb();
   const [attempt] = await db
     .select({ id: examAttempts.id, status: examAttempts.status })
@@ -345,6 +416,7 @@ export async function recordProctoringEvent(
     metadata?: Record<string, unknown>;
   }
 ) {
+  if (useFirestorePersistence()) return firestoreExam.recordProctoringEvent(userId, input) as any;
   const db = await requireDb();
   const [attempt] = await db
     .select({ id: examAttempts.id, status: examAttempts.status, proctoringConfig: exams.proctoringConfig })
@@ -369,6 +441,7 @@ export async function recordProctoringEvent(
 }
 
 export async function listAdminExams() {
+  if (useFirestorePersistence()) return firestoreExam.listAdminExams() as never;
   const db = await requireDb();
   return db
     .select({
@@ -387,6 +460,7 @@ export async function listAdminExams() {
 }
 
 export async function getAdminExam(examId: number) {
+  if (useFirestorePersistence()) return firestoreExam.getAdminExam(examId) as never;
   const db = await requireDb();
   const [exam] = await db.select().from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam) return null;
@@ -418,6 +492,7 @@ export async function createExam(
     }>;
   }
 ) {
+  if (useFirestorePersistence()) return firestoreExam.createExam(adminUserId, input) as never;
   const db = await requireDb();
   const [created] = await db
     .insert(exams)
@@ -467,6 +542,7 @@ export async function updateExam(
     }>;
   }
 ) {
+  if (useFirestorePersistence()) return firestoreExam.updateExam(adminUserId, examId, input) as never;
   const db = await requireDb();
   const [exam] = await db.select({ id: exams.id }).from(exams).where(eq(exams.id, examId)).limit(1);
   if (!exam) throw new Error("Assessment was not found.");
@@ -501,6 +577,7 @@ export async function updateExam(
 }
 
 export async function getAttemptReview(attemptId: number) {
+  if (useFirestorePersistence()) return firestoreExam.getAttemptReview(attemptId) as never;
   const db = await requireDb();
   const [attempt] = await db
     .select({
@@ -545,6 +622,7 @@ export async function getAttemptReview(attemptId: number) {
 }
 
 export async function getResultsExport() {
+  if (useFirestorePersistence()) return firestoreExam.getResultsExport() as never;
   const db = await requireDb();
   return db
     .select({
@@ -572,6 +650,7 @@ export async function writeAuditLog(
   entityId: number | null,
   metadata?: Record<string, unknown>
 ) {
+  if (useFirestorePersistence()) return firestoreExam.writeAuditLog(actorUserId, action, entityType, entityId, metadata);
   const db = await requireDb();
   await db.insert(examAuditLogs).values({ actorUserId, action, entityType, entityId, metadata });
 }
@@ -584,6 +663,7 @@ export async function createLocalStudent(input: {
   rollNumber?: string | null;
   passwordHash: string;
 }) {
+  if (useFirestorePersistence()) return firestoreIdentity.createLocalStudent(input);
   const db = await requireDb();
   const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, input.email)).limit(1);
   if (existing[0]) throw new Error("An account already exists for this email address.");
@@ -600,6 +680,7 @@ export async function createLocalStudent(input: {
 }
 
 export async function findLocalCredentialByEmail(email: string) {
+  if (useFirestorePersistence()) return firestoreIdentity.findLocalCredentialByEmail(email);
   const db = await requireDb();
   const [record] = await db
     .select({ userId: users.id, passwordHash: localCredentials.passwordHash, role: users.role, email: users.email, name: users.name, emailVerifiedAt: users.emailVerifiedAt })
@@ -611,6 +692,7 @@ export async function findLocalCredentialByEmail(email: string) {
 }
 
 export async function findLocalAccountByEmail(email: string) {
+  if (useFirestorePersistence()) return firestoreIdentity.findLocalAccountByEmail(email);
   const db = await requireDb();
   const [account] = await db
     .select({ userId: users.id, email: users.email, emailVerifiedAt: users.emailVerifiedAt, fullName: users.name })
@@ -622,12 +704,14 @@ export async function findLocalAccountByEmail(email: string) {
 }
 
 export async function createAccountToken(userId: number, purpose: "verify_email" | "reset_password", tokenHash: string, expiresAt: Date) {
+  if (useFirestorePersistence()) return firestoreIdentity.createAccountToken(userId, purpose, tokenHash, expiresAt);
   const db = await requireDb();
   const [created] = await db.insert(accountTokens).values({ userId, purpose, tokenHash, expiresAt }).$returningId();
   return created!;
 }
 
 export async function consumeAccountToken(tokenHash: string, purpose: "verify_email" | "reset_password") {
+  if (useFirestorePersistence()) return firestoreIdentity.consumeAccountToken(tokenHash, purpose);
   const db = await requireDb();
   const [token] = await db.select().from(accountTokens).where(and(eq(accountTokens.tokenHash, tokenHash), eq(accountTokens.purpose, purpose))).limit(1);
   if (!token || token.consumedAt || token.expiresAt <= new Date()) return null;
@@ -637,27 +721,32 @@ export async function consumeAccountToken(tokenHash: string, purpose: "verify_em
 }
 
 export async function markEmailVerified(userId: number) {
+  if (useFirestorePersistence()) return firestoreIdentity.markEmailVerified(userId);
   const db = await requireDb();
   await db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, userId));
 }
 
 export async function replaceLocalPassword(userId: number, passwordHash: string) {
+  if (useFirestorePersistence()) return firestoreIdentity.replaceLocalPassword(userId, passwordHash);
   const db = await requireDb();
   await db.update(localCredentials).set({ passwordHash }).where(eq(localCredentials.userId, userId));
 }
 
 export async function getUserById(userId: number) {
+  if (useFirestorePersistence()) return firestoreIdentity.getUserById(userId);
   const db = await requireDb();
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   return user ?? null;
 }
 
 export async function touchUserSignIn(userId: number) {
+  if (useFirestorePersistence()) return firestoreIdentity.touchUserSignIn(userId);
   const db = await requireDb();
   await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
 }
 
 export async function ensureConfiguredAdmin(openId: string) {
+  if (useFirestorePersistence()) return firestoreIdentity.ensureConfiguredAdmin(openId);
   const db = await requireDb();
   const [existing] = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   if (existing) {
@@ -672,6 +761,7 @@ export async function ensureConfiguredAdmin(openId: string) {
 }
 
 export async function listManagedUsers() {
+  if (useFirestorePersistence()) return firestoreIdentity.listManagedUsers();
   const db = await requireDb();
   return db
     .select({
@@ -695,6 +785,7 @@ export async function updateManagedUser(
   actorUserId: number,
   input: { userId: number; fullName: string; collegeName?: string | null; rollNumber?: string | null; role: "user" | "admin" }
 ) {
+  if (useFirestorePersistence()) return firestoreIdentity.updateManagedUser(actorUserId, input);
   const db = await requireDb();
   const [user] = await db.select({ id: users.id }).from(users).where(eq(users.id, input.userId)).limit(1);
   if (!user) throw new Error("User record was not found.");
@@ -721,6 +812,7 @@ async function getAttemptOwner(attemptId: number) {
 }
 
 export async function sendSupportMessage(input: { attemptId: number; senderUserId: number; senderRole: "student" | "admin"; message: string }) {
+  if (useFirestorePersistence()) return firestoreExam.sendSupportMessage(input) as never;
   const db = await requireDb();
   const attempt = await getAttemptOwner(input.attemptId);
   if (!attempt) throw new Error("Exam attempt was not found.");
@@ -732,6 +824,7 @@ export async function sendSupportMessage(input: { attemptId: number; senderUserI
 }
 
 export async function getSupportMessages(attemptId: number, requesterUserId: number, isAdmin: boolean) {
+  if (useFirestorePersistence()) return firestoreExam.getSupportMessages(attemptId, requesterUserId, isAdmin) as never;
   const db = await requireDb();
   const attempt = await getAttemptOwner(attemptId);
   if (!attempt || !canAccessAttemptReport({ requesterUserId, attemptOwnerUserId: attempt.userId, isAdmin })) throw new Error("Support conversation was not found.");
@@ -751,6 +844,7 @@ export async function getSupportMessages(attemptId: number, requesterUserId: num
 }
 
 export async function listSupportInbox() {
+  if (useFirestorePersistence()) return firestoreExam.listSupportInbox() as never;
   const db = await requireDb();
   return db
     .select({
@@ -773,17 +867,20 @@ export async function listSupportInbox() {
 }
 
 export async function createAdminNotification(input: { type: "support_message" | "high_risk_integrity"; title: string; body: string; destination: string; relatedAttemptId?: number | null }) {
+  if (useFirestorePersistence()) return firestoreExam.createAdminNotification(input) as never;
   const db = await requireDb();
   const [created] = await db.insert(adminNotifications).values({ ...input, relatedAttemptId: input.relatedAttemptId ?? null }).$returningId();
   return created!;
 }
 
 export async function listAdminNotifications() {
+  if (useFirestorePersistence()) return firestoreExam.listAdminNotifications() as never;
   const db = await requireDb();
   return db.select().from(adminNotifications).orderBy(desc(adminNotifications.createdAt)).limit(80);
 }
 
 export async function markAdminNotificationRead(notificationId: number) {
+  if (useFirestorePersistence()) return firestoreExam.markAdminNotificationRead(notificationId);
   const db = await requireDb();
   await db.update(adminNotifications).set({ readAt: new Date() }).where(eq(adminNotifications.id, notificationId));
 }
