@@ -104,3 +104,4 @@
 - [x] Record the exact Vercel environment-variable boundary and Android release gates without committing or exposing values.
 - [ ] Create, deploy, and validate a Vercel-compatible full-stack configuration without exposing existing application secrets.
 - [ ] Fix Vercel SPA routing so `/api/trpc/*` reaches the serverless Express function instead of the client-side 404 route.
+- [ ] Diagnose and resolve the Vercel serverless function crash for the public tRPC route without exposing secrets.
