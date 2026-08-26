@@ -90,7 +90,7 @@
 - [x] Locate the requested Ponytail GitHub repository, review its documentation and license, and assess its compatibility before any download or execution.
 - [x] Inventory eligible current-workspace projects and apply the vetted non-runtime Ponytail development-policy template without third-party hooks or production runtime changes.
 - [ ] Prepare a production Android release checklist and physical-device permission test record for the published ProctorX domain.
-- [ ] Configure the Capacitor wrapper with the published ProctorX HTTPS domain after the user publishes the application.
+- [x] Configure the Capacitor wrapper with the published ProctorX HTTPS domain after the user publishes the application.
 - [ ] Run consented physical Android camera, microphone, fullscreen, backgrounding, and recovery checks against the published wrapper.
 - [ ] Configure a user-owned Android signing key and generate a signed release APK after device validation passes.
 - [x] Inspect Vercel deployment compatibility for the full-stack ProctorX application, including database, sessions, Socket.IO, and Android-wrapper domain requirements.

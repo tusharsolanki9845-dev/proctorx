@@ -2,32 +2,33 @@
 
 ## Current Status
 
-The Capacitor Android project has been generated, its camera and microphone permissions are declared, and a debug build completed successfully. The build used a placeholder host, so it is not suitable for distribution. The final wrapper must be synchronized against the published ProctorX HTTPS domain.
+The Capacitor Android project has been generated, its camera and microphone permissions are declared, and a debug build completed successfully. It was synchronized on 2026-08-26 against the stable Vercel alias `https://proctorx-web.vercel.app`. The alias is reachable and its public web route plus unauthenticated tRPC route were verified. Production database, session, administrator-credential, and OAuth environment variables remain intentionally unconfigured in Vercel, so the wrapper is **not** ready for distribution or candidate use until those full-stack prerequisites are complete.
 
 | Release gate | Status | Owner |
 |---|---|---|
 | ProctorX application checkpoint | Complete | ProctorX project |
-| Published HTTPS domain | Required | Project owner |
-| Capacitor sync against published domain | Pending | Development workflow |
+| Stable Vercel HTTPS alias | Complete for host configuration | Development workflow |
+| Production database, session, credentials, and OAuth configuration | Pending | Project owner |
+| Capacitor sync against `https://proctorx-web.vercel.app` | Complete | Development workflow |
 | Physical Android device permission matrix | Pending | Consenting tester |
 | User-owned Android signing key | Required | Project owner |
 | Signed release APK | Pending | Development workflow |
 
 ## 1. Publish the Web Application
 
-Use the workspace **Publish** control to publish the current checkpoint. Record the resulting real HTTPS domain. Do not use a temporary preview address, localhost address, or placeholder domain for a release APK.
+The stable Vercel alias is `https://proctorx-web.vercel.app`. Do not substitute a temporary preview address, localhost address, or placeholder domain in the Android wrapper. Before release, configure and test the full production service using the environment requirements document; a reachable landing page alone is not sufficient for candidate use.
 
 ## 2. Synchronize the Android Wrapper
 
 Set the real domain and synchronize:
 
 ```bash
-export PROCTORX_ANDROID_SERVER_URL="https://your-published-proctorx-domain"
+export PROCTORX_ANDROID_SERVER_URL="https://proctorx-web.vercel.app"
 pnpm android:sync
 pnpm android:open
 ```
 
-Confirm that `android/app/src/main/assets/capacitor.config.json` contains the published HTTPS domain before installing the app.
+Confirm that `android/app/src/main/assets/capacitor.config.json` contains `https://proctorx-web.vercel.app` before installing the app.
 
 ## 3. Run the Consented Physical-Device Matrix
 
