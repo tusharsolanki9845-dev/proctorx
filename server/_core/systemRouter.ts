@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { notifyOwner } from "./notification";
 import { adminProcedure, publicProcedure, router } from "./trpc";
+import { getFirebaseFirestore, isFirebaseAdminConfigured } from "../firebaseAdmin";
 
 export const systemRouter = router({
   health: publicProcedure
@@ -12,6 +13,20 @@ export const systemRouter = router({
     .query(() => ({
       ok: true,
     })),
+
+  firebaseReadiness: adminProcedure.query(async () => {
+    if (!isFirebaseAdminConfigured()) {
+      return { configured: false, reachable: false } as const;
+    }
+
+    try {
+      await getFirebaseFirestore().listCollections();
+      return { configured: true, reachable: true } as const;
+    } catch (error) {
+      console.error("[Firebase] Admin readiness check failed", error);
+      return { configured: true, reachable: false } as const;
+    }
+  }),
 
   notifyOwner: adminProcedure
     .input(
