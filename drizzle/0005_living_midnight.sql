@@ -1,0 +1,1 @@
+ALTER TABLE `proctoringEvents` MODIFY COLUMN `eventType` enum('camera_interrupted','face_absent','multiple_faces','fullscreen_exit','tab_hidden','device_check_failed','audio_activity') NOT NULL;

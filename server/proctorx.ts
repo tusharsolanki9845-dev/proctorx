@@ -25,6 +25,10 @@ const proctoringConfigSchema = z.object({
   warningEventCount: z.number().int().min(1).max(50).default(DEFAULT_PROCTORING_CONFIG.warningEventCount),
   autoSubmitEventCount: z.number().int().min(2).max(100).default(DEFAULT_PROCTORING_CONFIG.autoSubmitEventCount),
   immediateSubmitOnFocusLoss: z.boolean().default(DEFAULT_PROCTORING_CONFIG.immediateSubmitOnFocusLoss),
+  audioMonitoringEnabled: z.boolean().default(DEFAULT_PROCTORING_CONFIG.audioMonitoringEnabled),
+  audioActivityThresholdSeconds: z.number().int().min(1).max(120).default(DEFAULT_PROCTORING_CONFIG.audioActivityThresholdSeconds),
+  audioActivityLevel: z.number().int().min(1).max(127).default(DEFAULT_PROCTORING_CONFIG.audioActivityLevel),
+  immediateSubmitOnAudioActivity: z.boolean().default(DEFAULT_PROCTORING_CONFIG.immediateSubmitOnAudioActivity),
 });
 
 const questionInputSchema = z.object({
@@ -191,12 +195,17 @@ export const proctorxRouter = router({
         const outcome = await db.recordProctoringEvent(ctx.user.id, input);
         const config = normalizeProctoringConfig(outcome.proctoringConfig);
         const escalation = getIntegrityEscalation(outcome.eventCount, config);
-        const immediateSubmission = config.immediateSubmitOnFocusLoss && requiresImmediateIntegritySubmission(input.eventType);
+        const immediateSubmission = requiresImmediateIntegritySubmission(input.eventType) && (
+          (input.eventType === "tab_hidden" && config.immediateSubmitOnFocusLoss) ||
+          (input.eventType === "audio_activity" && config.audioMonitoringEnabled && config.immediateSubmitOnAudioActivity)
+        );
         const shouldAutoSubmit = immediateSubmission || escalation.shouldAutoSubmit;
         if (shouldAutoSubmit) {
-          const title = immediateSubmission ? "Assessment submitted after focus loss" : "High-risk integrity threshold";
+          const title = immediateSubmission ? (input.eventType === "audio_activity" ? "Assessment submitted after audio activity" : "Assessment submitted after focus loss") : "High-risk integrity threshold";
           const body = immediateSubmission
-            ? `Attempt #${input.attemptId} was automatically submitted after the browser lost focus or was minimized. Review the recorded context before taking any further action.`
+            ? input.eventType === "audio_activity"
+              ? `Attempt #${input.attemptId} was automatically submitted after configured sustained audio activity. This signal does not identify a speaker; review the recorded context before taking any further action.`
+              : `Attempt #${input.attemptId} was automatically submitted after the browser lost focus or was minimized. Review the recorded context before taking any further action.`
             : `Attempt #${input.attemptId} reached its configured automatic-submission threshold.`;
           await db.createAdminNotification({ type: "high_risk_integrity", title, body, destination: `/admin/attempt/${input.attemptId}`, relatedAttemptId: input.attemptId });
           notifyAdministrators();

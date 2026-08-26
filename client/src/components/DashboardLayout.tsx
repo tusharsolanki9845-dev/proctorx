@@ -2,6 +2,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { AdminNotifications } from "@/components/AdminNotifications";
+import { FocusStatusIndicator } from "@/components/FocusStatusIndicator";
 import { BarChart3, ClipboardList, Headphones, LayoutDashboard, LogOut, ShieldCheck, UsersRound } from "lucide-react";
 import { useLocation } from "wouter";
 
@@ -53,7 +54,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </div>
       </aside>
-      <div className="relative min-w-0">{user.role === "admin" && <div className="absolute right-4 top-4 z-20 sm:right-6 sm:top-6 lg:right-9 lg:top-9"><AdminNotifications /></div>}<main className="min-w-0 p-4 pt-16 sm:p-6 sm:pt-20 lg:p-9 lg:pt-24">{children}</main></div>
+      <div className="relative min-w-0">{user.role === "admin" && <div className="absolute right-4 top-4 z-20 flex items-start gap-3 sm:right-6 sm:top-6 lg:right-9 lg:top-9"><FocusStatusIndicator compact /><AdminNotifications /></div>}<main className="min-w-0 p-4 pt-16 sm:p-6 sm:pt-20 lg:p-9 lg:pt-24">{children}</main></div>
     </div>
   );
 }

@@ -74,3 +74,18 @@
 - [x] Add integration-level coverage for ExamConsole browser-event wiring during permission/fullscreen setup and for blur/visibility deduplication after readiness.
 - [x] Add rendered ExamConsole integration tests that simulate permission/fullscreen setup and post-readiness blur, visibility, and fullscreen events without duplicate submission signals.
 - [x] Complete autonomous release validation using the existing full-stack integrity evidence, and explicitly defer only unconsented physical multi-person camera observations.
+- [x] Add a real-time, privacy-conscious dashboard indicator showing whether the current browser window is focused, blurred, or backgrounded.
+- [x] Prepare Android wrapper packaging configuration and build instructions for the ProctorX web application.
+- [x] Add device-camera compatibility checks and a documented Android test matrix covering permission, local processing, fullscreen, backgrounding, and recovery behavior.
+- [x] Add an explicitly consented microphone-permission flow with browser-local audio-activity monitoring that does not identify speakers or retain audio.
+- [x] Add configurable audio-activity escalation with transparent candidate notice, automatic-submission option, and administrator review context.
+- [x] Add real-time dashboard status for browser focus and consented microphone activity without exposing live audio or camera content.
+- [x] Add a candidate-read microphone-level check using local ephemeral audio processing, with no retained recording, transcript, voiceprint, or speaker-identification feature.
+- [x] Add a pre-exam audio-monitoring disclosure that states whether microphone activity is enabled and whether it can auto-submit the attempt.
+- [x] Add a dashboard-safe real-time microphone activity state indicator without exposing raw audio, voice content, or a recording.
+- [x] Implement concrete browser and Capacitor Android compatibility diagnostics, then record their validated results separately from the manual device matrix.
+- [x] Make the pre-exam microphone-policy notice explicit for every assessment, including when audio monitoring is disabled.
+- [x] Generate and validate the native Capacitor Android project build, recording its build result separately from browser diagnostics and explicitly deferring physical-device permission validation until a real published host is supplied.
+- [x] Inspect the requested Ponytail code identifier, determine its intended integration boundary, and implement it only after the project role is unambiguous.
+- [x] Locate the requested Ponytail GitHub repository, review its documentation and license, and assess its compatibility before any download or execution.
+- [x] Inventory eligible current-workspace projects and apply the vetted non-runtime Ponytail development-policy template without third-party hooks or production runtime changes.

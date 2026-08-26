@@ -47,6 +47,18 @@ describe("Integrity Foundations Demo — procedure and timeline audit", () => {
     expect(db.submitExamAttempt).not.toHaveBeenCalled();
   });
 
+  it("immediately submits only when the assessment explicitly enables strict audio-activity handling", async () => {
+    timeline.splice(0); vi.clearAllMocks();
+    vi.mocked(db.recordProctoringEvent).mockResolvedValueOnce({ eventCount: 1, proctoringConfig: { warningEventCount: 2, autoSubmitEventCount: 5, faceAbsentThresholdSeconds: 3, multipleFaceThresholdSeconds: 3, immediateSubmitOnFocusLoss: true, audioMonitoringEnabled: true, audioActivityThresholdSeconds: 4, audioActivityLevel: 18, immediateSubmitOnAudioActivity: true } });
+    const candidate = appRouter.createCaller(candidateContext());
+
+    const outcome = await candidate.proctorx.proctoring.logEvent({ attemptId: 900, eventType: "audio_activity", durationMs: 4100, metadata: { levelBucket: 2, locallyProcessed: true } });
+
+    expect(outcome).toMatchObject({ shouldWarn: true, shouldAutoSubmit: true, submitted: true });
+    expect(db.submitExamAttempt).toHaveBeenCalledWith(1, 900, "integrity_threshold");
+    expect(db.createAdminNotification).toHaveBeenCalledWith(expect.objectContaining({ title: "Assessment submitted after audio activity", body: expect.stringContaining("does not identify a speaker") }));
+  });
+
   it("allows an administrator to reopen a submitted attempt only with an explicit handling basis", async () => {
     vi.clearAllMocks();
     const administrator = appRouter.createCaller(candidateContext("admin"));

@@ -170,6 +170,7 @@ export const proctoringEvents = mysqlTable(
       "fullscreen_exit",
       "tab_hidden",
       "device_check_failed",
+      "audio_activity",
     ]).notNull(),
     severity: mysqlEnum("severity", ["info", "warning", "critical"]).default("warning").notNull(),
     detectedAt: timestamp("detectedAt").defaultNow().notNull(),
