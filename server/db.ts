@@ -679,6 +679,23 @@ export async function createLocalStudent(input: {
   return created!;
 }
 
+export async function createFirebaseStudent(input: {
+  firebaseUid: string;
+  openId: string;
+  fullName: string;
+  email: string;
+  collegeName?: string | null;
+  rollNumber?: string | null;
+}) {
+  if (!useFirestorePersistence()) throw new Error("Firebase Email/Password accounts require Firebase-backed persistence.");
+  return firestoreIdentity.createFirebaseStudent(input);
+}
+
+export async function getUserByFirebaseUid(firebaseUid: string) {
+  if (!useFirestorePersistence()) return null;
+  return firestoreIdentity.getUserByFirebaseUid(firebaseUid);
+}
+
 export async function findLocalCredentialByEmail(email: string) {
   if (useFirestorePersistence()) return firestoreIdentity.findLocalCredentialByEmail(email);
   const db = await requireDb();

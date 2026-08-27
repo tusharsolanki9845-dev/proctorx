@@ -12,6 +12,7 @@ export const systemRouter = router({
     )
     .query(() => ({
       ok: true,
+      firebaseAdminConfigured: isFirebaseAdminConfigured(),
     })),
 
   firebaseReadiness: adminProcedure.query(async () => {

@@ -9,6 +9,16 @@ import { notifyAdministrators, notifySupportConversation } from "./supportRealti
 import { createAccountTokenValue, getTokenExpiry, hashAccountToken } from "./accountSecurity";
 import { deliverAccountLink } from "./transactionalEmail";
 import {
+  authenticateFirebaseEmailPassword,
+  createFirebaseEmailPasswordUser,
+  deleteFirebaseEmailPasswordUser,
+  FirebaseAuthCredentialsError,
+  generateFirebaseVerificationLink,
+  isFirebaseEmailPasswordAuthenticationConfigured,
+  sendFirebasePasswordResetEmail,
+  sendFirebaseVerificationEmail,
+} from "./firebaseAuth";
+import {
   DEFAULT_PROCTORING_CONFIG,
   EVENT_TYPES,
   getIntegrityEscalation,
@@ -54,6 +64,11 @@ async function sendAccountLink(input: { email: string; userId: number; purpose: 
   });
 }
 
+function firebaseAuthFailure(error: unknown) {
+  if (error instanceof FirebaseAuthCredentialsError) return new TRPCError({ code: "UNAUTHORIZED", message: error.message });
+  return error;
+}
+
 const examInputSchema = z
   .object({
     title: z.string().trim().min(3).max(255),
@@ -79,6 +94,21 @@ export const proctorxRouter = router({
       .input(z.object({ fullName: z.string().trim().min(2).max(255), email: z.string().trim().email().max(320), password: z.string().min(10).max(128), collegeName: z.string().trim().max(255).nullable().optional(), rollNumber: z.string().trim().max(128).nullable().optional(), origin: z.string().url() }))
       .mutation(async ({ ctx, input }) => {
         const email = input.email.toLowerCase();
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) {
+          let firebaseUser: { uid: string; email: string } | null = null;
+          let proctorxUserCreated = false;
+          try {
+            firebaseUser = await createFirebaseEmailPasswordUser({ email, password: input.password, displayName: input.fullName });
+            const user = await db.createFirebaseStudent({ ...input, email, firebaseUid: firebaseUser.uid, openId: `firebase:${firebaseUser.uid}` });
+            proctorxUserCreated = true;
+            const firebaseSession = await authenticateFirebaseEmailPassword({ email, password: input.password });
+            const verificationDelivery = await sendFirebaseVerificationEmail(firebaseSession.idToken, input.origin);
+            return { id: user.id, verificationDelivery };
+          } catch (error) {
+            if (firebaseUser && !proctorxUserCreated) await deleteFirebaseEmailPasswordUser(firebaseUser.uid).catch(() => undefined);
+            throw firebaseAuthFailure(error);
+          }
+        }
         const user = await db.createLocalStudent({ ...input, email, openId: `local:${randomUUID()}`, passwordHash: hashPassword(input.password) });
         const verificationDelivery = await sendAccountLink({ email, userId: user.id, purpose: "verify_email", origin: input.origin });
         return { id: user.id, verificationDelivery };
@@ -86,6 +116,24 @@ export const proctorxRouter = router({
     signIn: publicProcedure
       .input(z.object({ email: z.string().trim().email().max(320), password: z.string().min(1).max(128) }))
       .mutation(async ({ ctx, input }) => {
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) {
+          try {
+            const firebaseSession = await authenticateFirebaseEmailPassword({ email: input.email.toLowerCase(), password: input.password });
+            if (!firebaseSession.emailVerified) {
+              await sendFirebaseVerificationEmail(firebaseSession.idToken, process.env.PROCTORX_PUBLIC_ORIGIN ?? "http://localhost:3000");
+              throw new TRPCError({ code: "FORBIDDEN", message: "Verify your email before signing in. A new verification email has been sent." });
+            }
+            const account = await db.getUserByFirebaseUid(firebaseSession.uid);
+            if (!account) throw new TRPCError({ code: "UNAUTHORIZED", message: "This Firebase account is not registered with ProctorX." });
+            await db.markEmailVerified(account.id);
+            await db.touchUserSignIn(account.id);
+            await issueLocalSession(ctx.req, ctx.res, account.id);
+            return { id: account.id, role: account.role };
+          } catch (error) {
+            if (error instanceof TRPCError) throw error;
+            throw firebaseAuthFailure(error);
+          }
+        }
         const credential = await db.findLocalCredentialByEmail(input.email.toLowerCase());
         if (!credential || !verifyPassword(input.password, credential.passwordHash)) throw new TRPCError({ code: "UNAUTHORIZED", message: "Email or password is incorrect." });
         if (!credential.emailVerifiedAt) throw new TRPCError({ code: "FORBIDDEN", message: "Verify your email before signing in." });
@@ -104,6 +152,21 @@ export const proctorxRouter = router({
     requestVerification: publicProcedure
       .input(z.object({ email: z.string().trim().email().max(320), origin: z.string().url() }))
       .mutation(async ({ input }) => {
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) {
+          try {
+            const link = await generateFirebaseVerificationLink(input.email.toLowerCase(), input.origin);
+            const delivery = await deliverAccountLink({
+              to: input.email.toLowerCase(),
+              subject: "Verify your ProctorX email",
+              heading: "Verify your account",
+              description: "Confirm your email address to activate your ProctorX student account.",
+              link,
+            });
+            return { accepted: true as const, delivery };
+          } catch {
+            return { accepted: true as const, delivery: { mode: "configuration_required" as const } };
+          }
+        }
         const account = await db.findLocalAccountByEmail(input.email.toLowerCase());
         if (!account || !account.email || account.emailVerifiedAt) return { accepted: true as const, delivery: { mode: "sent" as const } };
         return { accepted: true as const, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "verify_email", origin: input.origin }) };
@@ -111,6 +174,7 @@ export const proctorxRouter = router({
     verifyEmail: publicProcedure
       .input(z.object({ token: z.string().min(32).max(256) }))
       .mutation(async ({ input }) => {
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) throw new TRPCError({ code: "BAD_REQUEST", message: "Use the secure Firebase verification link sent to your email." });
         const token = await db.consumeAccountToken(hashAccountToken(input.token), "verify_email");
         if (!token) throw new TRPCError({ code: "BAD_REQUEST", message: "This verification link is invalid, expired, or has already been used." });
         await db.markEmailVerified(token.userId);
@@ -119,6 +183,13 @@ export const proctorxRouter = router({
     requestPasswordReset: publicProcedure
       .input(z.object({ email: z.string().trim().email().max(320), origin: z.string().url() }))
       .mutation(async ({ input }) => {
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) {
+          try {
+            return { accepted: true as const, delivery: await sendFirebasePasswordResetEmail(input.email.toLowerCase(), input.origin) };
+          } catch {
+            return { accepted: true as const, delivery: { mode: "sent" as const } };
+          }
+        }
         const account = await db.findLocalAccountByEmail(input.email.toLowerCase());
         if (!account || !account.email) return { accepted: true as const, delivery: { mode: "sent" as const } };
         return { accepted: true as const, delivery: await sendAccountLink({ email: account.email, userId: account.userId, purpose: "reset_password", origin: input.origin }) };
@@ -126,6 +197,7 @@ export const proctorxRouter = router({
     resetPassword: publicProcedure
       .input(z.object({ token: z.string().min(32).max(256), password: z.string().min(10).max(128) }))
       .mutation(async ({ ctx, input }) => {
+        if (isFirebaseEmailPasswordAuthenticationConfigured()) throw new TRPCError({ code: "BAD_REQUEST", message: "Use the secure Firebase password-reset link sent to your email." });
         const token = await db.consumeAccountToken(hashAccountToken(input.token), "reset_password");
         if (!token) throw new TRPCError({ code: "BAD_REQUEST", message: "This reset link is invalid, expired, or has already been used." });
         await db.replaceLocalPassword(token.userId, hashPassword(input.password));

@@ -12,13 +12,29 @@ const asDate = (value: Timestamp | Date | null | undefined) => !value ? null : v
 const timestamp = (value: Date | null | undefined) => value ? Timestamp.fromDate(value) : null;
 const asBoolNumber = (value: boolean) => value ? 1 : 0;
 
-async function nextIdInTransaction(entity: string, transaction: FirebaseFirestore.Transaction) {
+async function reserveIdsInTransaction(requests: Array<{ entity: string; count: number }>, transaction: FirebaseFirestore.Transaction) {
   const db = getFirebaseFirestore();
   const counter = db.collection("meta").doc("counters");
   const snapshot = await transaction.get(counter);
-  const id = Number(snapshot.data()?.[entity] ?? 0) + 1;
-  transaction.set(counter, { [entity]: id }, { merge: true });
-  return id;
+  const currentCounters = snapshot.data() ?? {};
+  const updates: Record<string, number> = {};
+  const allocations: Record<string, number[]> = {};
+  for (const { entity, count } of requests) {
+    if (!Number.isInteger(count) || count < 1 || allocations[entity]) throw new Error("Each counter reservation requires one unique positive count.");
+    const firstId = Number(currentCounters[entity] ?? 0) + 1;
+    allocations[entity] = Array.from({ length: count }, (_, index) => firstId + index);
+    updates[entity] = firstId + count - 1;
+  }
+  transaction.set(counter, updates, { merge: true });
+  return allocations;
+}
+
+async function nextIdInTransaction(entity: string, transaction: FirebaseFirestore.Transaction) {
+  return (await reserveIdsInTransaction([{ entity, count: 1 }], transaction))[entity]![0]!;
+}
+
+async function nextIdsInTransaction(entity: string, count: number, transaction: FirebaseFirestore.Transaction) {
+  return (await reserveIdsInTransaction([{ entity, count }], transaction))[entity]!;
 }
 
 async function nextId(entity: string) {
@@ -165,8 +181,9 @@ export async function recordProctoringEvent(userId: number, input: { attemptId: 
     const events = await transaction.get(attemptRef.collection("events"));
     const eventCount = events.size + 1;
     const severity: Severity = eventCount >= config.autoSubmitEventCount ? "critical" : eventCount >= config.warningEventCount ? "warning" : "info";
-    const eventRef = attemptRef.collection("events").doc();
-    transaction.create(eventRef, { id: eventRef.id, attemptId: input.attemptId, eventType: input.eventType, severity, detectedAt: Timestamp.now(), durationMs: input.durationMs, metadata: input.metadata ?? null, resolvedAt: null });
+    const eventId = await nextIdInTransaction("proctoringEvents", transaction);
+    const eventRef = attemptRef.collection("events").doc(String(eventId));
+    transaction.create(eventRef, { id: eventId, attemptId: input.attemptId, eventType: input.eventType, severity, detectedAt: Timestamp.now(), durationMs: input.durationMs, metadata: input.metadata ?? null, resolvedAt: null });
     transaction.update(attemptRef, { integrityRiskScore: eventCount, lastActivityAt: Timestamp.now() });
     return { eventCount, proctoringConfig: config };
   });
@@ -193,35 +210,36 @@ export async function getAdminExam(examId: number) {
 
 export async function createExam(adminUserId: number, input: { title: string; description?: string | null; durationSeconds: number; startsAt?: Date | null; endsAt?: Date | null; status: ExamStatus; maxAttempts: number; shuffleQuestions: boolean; releaseResultsImmediately: boolean; proctoringConfig: Record<string, unknown>; questions: Array<{ prompt: string; optionA: string; optionB: string; optionC: string; optionD: string; correctOption: AnswerOption; points: number }> }) {
   const db = getFirebaseFirestore();
-  const id = await nextId("exams");
-  const now = Timestamp.now();
-  const batch = db.batch();
-  batch.create(db.collection("exams").doc(String(id)), { id, createdByUserId: adminUserId, title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp(input.startsAt), endsAt: timestamp(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), createdAt: now, updatedAt: now });
-  for (let index = 0; index < input.questions.length; index += 1) {
-    const question = input.questions[index]!;
-    const questionId = await nextId("questions");
-    batch.create(db.collection("exams").doc(String(id)).collection("questions").doc(String(questionId)), { id: questionId, examId: id, ...question, orderIndex: index, createdAt: now, updatedAt: now });
-  }
-  await batch.commit();
+  if (input.questions.length > 100) throw new Error("An assessment may contain at most 100 questions.");
+  const id = await db.runTransaction(async transaction => {
+    const ids = await reserveIdsInTransaction([{ entity: "exams", count: 1 }, { entity: "questions", count: input.questions.length }], transaction);
+    const examId = ids.exams![0]!;
+    const questionIds = ids.questions!;
+    const now = Timestamp.now();
+    const examRef = db.collection("exams").doc(String(examId));
+    transaction.create(examRef, { id: examId, createdByUserId: adminUserId, title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp(input.startsAt), endsAt: timestamp(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), createdAt: now, updatedAt: now });
+    input.questions.forEach((question, index) => transaction.create(examRef.collection("questions").doc(String(questionIds[index]!)), { id: questionIds[index]!, examId, ...question, orderIndex: index, createdAt: now, updatedAt: now }));
+    return examId;
+  });
   await writeAuditLog(adminUserId, "exam.created", "exam", id, { questionCount: input.questions.length });
   return { id };
 }
 
 export async function updateExam(adminUserId: number, examId: number, input: { title: string; description?: string | null; durationSeconds: number; startsAt?: Date | null; endsAt?: Date | null; status: ExamStatus; maxAttempts: number; shuffleQuestions: boolean; releaseResultsImmediately: boolean; proctoringConfig: Record<string, unknown>; questions: Array<{ prompt: string; optionA: string; optionB: string; optionC: string; optionD: string; correctOption: AnswerOption; points: number }> }) {
   const db = getFirebaseFirestore();
+  if (input.questions.length > 100) throw new Error("An assessment may contain at most 100 questions.");
   const examRef = db.collection("exams").doc(String(examId));
-  const [examSnapshot, attemptSnapshot, existingQuestions] = await Promise.all([examRef.get(), db.collection("attempts").where("examId", "==", examId).get(), examRef.collection("questions").get()]);
-  if (!examSnapshot.exists) throw new Error("Assessment was not found.");
-  if (!attemptSnapshot.empty) throw new Error("Assessments with recorded attempts cannot have their questions or settings changed.");
-  const batch = db.batch();
-  batch.update(examRef, { title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp(input.startsAt), endsAt: timestamp(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), updatedAt: Timestamp.now() });
-  existingQuestions.docs.forEach(question => batch.delete(question.ref));
-  for (let index = 0; index < input.questions.length; index += 1) {
-    const question = input.questions[index]!;
-    const questionId = await nextId("questions");
-    batch.create(examRef.collection("questions").doc(String(questionId)), { id: questionId, examId, ...question, orderIndex: index, createdAt: Timestamp.now(), updatedAt: Timestamp.now() });
-  }
-  await batch.commit();
+  await db.runTransaction(async transaction => {
+    const [examSnapshot, attemptSnapshot, existingQuestions] = await Promise.all([transaction.get(examRef), transaction.get(db.collection("attempts").where("examId", "==", examId)), transaction.get(examRef.collection("questions"))]);
+    if (!examSnapshot.exists) throw new Error("Assessment was not found.");
+    if (!attemptSnapshot.empty) throw new Error("Assessments with recorded attempts cannot have their questions or settings changed.");
+    if (existingQuestions.size + input.questions.length + 2 > 500) throw new Error("This assessment update exceeds Firestore's atomic write limit.");
+    const questionIds = await nextIdsInTransaction("questions", input.questions.length, transaction);
+    const now = Timestamp.now();
+    transaction.update(examRef, { title: input.title, description: input.description ?? null, durationSeconds: input.durationSeconds, startsAt: timestamp(input.startsAt), endsAt: timestamp(input.endsAt), status: input.status, maxAttempts: input.maxAttempts, shuffleQuestions: asBoolNumber(input.shuffleQuestions), releaseResultsImmediately: asBoolNumber(input.releaseResultsImmediately), proctoringConfig: normalizeProctoringConfig(input.proctoringConfig), updatedAt: now });
+    existingQuestions.docs.forEach(question => transaction.delete(question.ref));
+    input.questions.forEach((question, index) => transaction.create(examRef.collection("questions").doc(String(questionIds[index]!)), { id: questionIds[index]!, examId, ...question, orderIndex: index, createdAt: now, updatedAt: now }));
+  });
   await writeAuditLog(adminUserId, "exam.updated", "exam", examId, { questionCount: input.questions.length });
   return { id: examId };
 }
@@ -266,9 +284,10 @@ export async function sendSupportMessage(input: { attemptId: number; senderUserI
   const db = getFirebaseFirestore();
   const attempt = await getAttemptOwner(input.attemptId);
   if (!attempt || !canSendSupportMessage({ requesterUserId: input.senderUserId, attemptOwnerUserId: attempt.userId, attemptStatus: attempt.status, senderRole: input.senderRole })) throw new Error("Support chat is available only during your active exam attempt.");
-  const ref = db.collection("attempts").doc(String(input.attemptId)).collection("support").doc();
-  await ref.create({ id: ref.id, ...input, createdAt: Timestamp.now(), readAt: null });
-  return { id: ref.id };
+  const id = await nextId("supportMessages");
+  const ref = db.collection("attempts").doc(String(input.attemptId)).collection("support").doc(String(id));
+  await ref.create({ id, ...input, createdAt: Timestamp.now(), readAt: null });
+  return { id };
 }
 
 export async function getSupportMessages(attemptId: number, requesterUserId: number, isAdmin: boolean) {
@@ -301,9 +320,10 @@ export async function listSupportInbox() {
 }
 
 export async function createAdminNotification(input: { type: "support_message" | "high_risk_integrity"; title: string; body: string; destination: string; relatedAttemptId?: number | null }) {
-  const ref = getFirebaseFirestore().collection("adminNotifications").doc();
-  await ref.create({ id: ref.id, ...input, relatedAttemptId: input.relatedAttemptId ?? null, createdAt: Timestamp.now(), readAt: null });
-  return { id: ref.id };
+  const id = await nextId("adminNotifications");
+  const ref = getFirebaseFirestore().collection("adminNotifications").doc(String(id));
+  await ref.create({ id, ...input, relatedAttemptId: input.relatedAttemptId ?? null, createdAt: Timestamp.now(), readAt: null });
+  return { id };
 }
 
 export async function listAdminNotifications() {

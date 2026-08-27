@@ -5,7 +5,7 @@ import { registerStorageProxy } from "./_core/storageProxy";
 import { createContext } from "./_core/context";
 import { appRouter } from "./routers";
 
-export function createVercelApp() {
+export function createServerApp() {
   const app = express();
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

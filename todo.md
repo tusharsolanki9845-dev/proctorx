@@ -115,6 +115,9 @@
 - [x] Diagnose and resolve the Vercel serverless function crash for the public tRPC route without exposing secrets.
 - [x] Resolve the Firebase Admin serverless ESM compatibility crash by pinning a verified Firebase Admin dependency line and revalidating the Vercel bundle.
 - [x] Assess Netlify free-plan compatibility for the Firebase Admin-backed ProctorX API, secure sessions, and nationwide India delivery requirements.
-- [ ] Replace the Vercel-specific serverless build, rewrites, and deployment documentation with a validated Netlify Functions configuration.
+- [x] Retire the remaining Vercel-specific deployment artifacts and rewrite production deployment documentation around the validated Netlify Functions configuration.
 - [ ] Configure Netlify Production secrets securely and validate Firebase server-only readiness, student and administrator access, exam persistence, reports, support polling, and notification polling.
 - [ ] Deploy the validated Netlify production build, update the Capacitor host configuration, and retain the signed-APK release gates.
+- [x] Fix the live Netlify `/api/*` route so requests reach the Express/tRPC Function instead of the SPA fallback.
+- [x] Fix Netlify’s Firestore runtime dispatch so configured-administrator creation never falls back to the unavailable relational database.
+- [x] Make Firestore exam/question identifier allocation atomic across each exam write and preserve legacy numeric identifiers for answer, integrity, support, and notification records where client contracts require them.

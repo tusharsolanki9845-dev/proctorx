@@ -14,6 +14,7 @@ type StoredUser = {
   emailVerifiedAt: Timestamp | null;
   loginMethod: string | null;
   role: Role;
+  firebaseUid?: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   lastSignedIn: Timestamp;
@@ -164,6 +165,46 @@ export async function createLocalStudent(input: {
   });
 }
 
+export async function createFirebaseStudent(input: {
+  firebaseUid: string;
+  openId: string;
+  fullName: string;
+  email: string;
+  collegeName?: string | null;
+  rollNumber?: string | null;
+}) {
+  const db = getFirebaseFirestore();
+  const emailLookup = db.collection("userLookup").doc("email").collection("entries").doc(lookupId(input.email));
+  const openIdLookup = db.collection("userLookup").doc("openId").collection("entries").doc(lookupId(input.openId));
+  const firebaseUidLookup = db.collection("userLookup").doc("firebaseUid").collection("entries").doc(lookupId(input.firebaseUid));
+
+  return db.runTransaction(async transaction => {
+    const [existingEmail, existingFirebaseUid] = await Promise.all([transaction.get(emailLookup), transaction.get(firebaseUidLookup)]);
+    if (existingEmail.exists || existingFirebaseUid.exists) throw new Error("An account already exists for this email address.");
+    const id = await nextIdInTransaction("users", transaction);
+    const now = Timestamp.now();
+    const record: StoredUser = {
+      id,
+      openId: input.openId,
+      firebaseUid: input.firebaseUid,
+      name: input.fullName,
+      email: input.email,
+      emailVerifiedAt: null,
+      loginMethod: "firebase-email-password",
+      role: "user",
+      createdAt: now,
+      updatedAt: now,
+      lastSignedIn: now,
+      profile: { fullName: input.fullName, collegeName: input.collegeName ?? null, rollNumber: input.rollNumber ?? null },
+    };
+    transaction.create(db.collection("users").doc(String(id)), record);
+    transaction.create(emailLookup, { userId: id });
+    transaction.create(openIdLookup, { userId: id });
+    transaction.create(firebaseUidLookup, { userId: id });
+    return { id };
+  });
+}
+
 export async function findLocalCredentialByEmail(email: string) {
   const db = getFirebaseFirestore();
   const lookup = await db.collection("userLookup").doc("email").collection("entries").doc(lookupId(email)).get();
@@ -173,6 +214,14 @@ export async function findLocalCredentialByEmail(email: string) {
   const data = user.data() as StoredUser;
   if (!data.passwordHash) return null;
   return { userId: data.id, passwordHash: data.passwordHash, role: data.role, email: data.email, name: data.name, emailVerifiedAt: asDate(data.emailVerifiedAt) };
+}
+
+export async function getUserByFirebaseUid(firebaseUid: string) {
+  const db = getFirebaseFirestore();
+  const lookup = await db.collection("userLookup").doc("firebaseUid").collection("entries").doc(lookupId(firebaseUid)).get();
+  if (!lookup.exists) return null;
+  const record = await db.collection("users").doc(String(lookup.data()!.userId)).get();
+  return record.exists ? presentUser(record.data() as StoredUser) : null;
 }
 
 export async function findLocalAccountByEmail(email: string) {
