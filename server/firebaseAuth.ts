@@ -55,6 +55,10 @@ export function isFirebaseEmailActionRateLimited(error: unknown) {
   return error instanceof FirebaseAuthRequestError && error.code.includes("TOO_MANY_ATTEMPTS_TRY_LATER");
 }
 
+export function firebaseAuthRequestErrorCode(error: unknown) {
+  return error instanceof FirebaseAuthRequestError ? error.code : null;
+}
+
 export function isFirebaseEmailPasswordAuthenticationConfigured() {
   return isFirebaseAdminConfigured() && Boolean(process.env[FIREBASE_WEB_API_KEY_ENV]?.trim()) && !process.env.DATABASE_URL;
 }

@@ -12,6 +12,7 @@ import {
   authenticateFirebaseEmailPassword,
   createFirebaseEmailPasswordUser,
   deleteFirebaseEmailPasswordUser,
+  firebaseAuthRequestErrorCode,
   FirebaseAuthCredentialsError,
   isFirebaseEmailActionRateLimited,
   isFirebaseEmailPasswordAuthenticationConfigured,
@@ -71,6 +72,8 @@ function firebaseAuthFailure(error: unknown) {
 }
 
 function firebaseEmailActionFailureCode(error: unknown) {
+  const firebaseCode = firebaseAuthRequestErrorCode(error);
+  if (firebaseCode) return firebaseCode;
   const message = error instanceof Error ? error.message : "";
   return message.match(/\(([A-Z0-9_]+)\)\.?$/)?.[1] ?? "UNKNOWN";
 }
