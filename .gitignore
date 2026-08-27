@@ -5,7 +5,7 @@
 # Build outputs
 dist/
 build/
-api/
+api/[...path].mjs
 *.dist
 
 # Environment variables

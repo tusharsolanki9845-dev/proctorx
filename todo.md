@@ -127,3 +127,4 @@
 - [x] Prepare and provide a sanitized ZIP archive containing only the current ProctorX project source and configuration, excluding credentials, dependencies, build artifacts, logs, and temporary files.
 - [ ] Resume production validation after source-archive delivery, beginning with the Firebase verification-email delivery blocker for the approved test account.
 - [ ] Restore and validate a Vercel deployment path for the Firebase-backed ProctorX application at the user’s request, without changing the Firebase Spark-plan or publishing an Android APK.
+- [x] Verify and make the user-confirmed ProctorX repository and identified AI security repository public, without changing source contents or exposing credentials.
