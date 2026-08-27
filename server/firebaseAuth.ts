@@ -11,6 +11,11 @@ type FirebaseSignInResponse = {
 
 export class FirebaseAuthConfigurationError extends Error {}
 export class FirebaseAuthCredentialsError extends Error {}
+class FirebaseAuthRequestError extends Error {
+  constructor(public readonly code: string) {
+    super(`Firebase Authentication request failed (${code}).`);
+  }
+}
 
 function getFirebaseWebApiKey() {
   const key = process.env[FIREBASE_WEB_API_KEY_ENV]?.trim();
@@ -20,10 +25,10 @@ function getFirebaseWebApiKey() {
 
 function approvedContinueUrl(requestedOrigin: string) {
   const configuredOrigin = process.env.PROCTORX_PUBLIC_ORIGIN?.trim();
-  const origin = configuredOrigin || requestedOrigin;
-  const parsed = new URL(origin);
+  const requested = new URL(requestedOrigin);
+  const parsed = new URL(configuredOrigin || requestedOrigin);
   if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") throw new FirebaseAuthConfigurationError("A secure public ProctorX origin is required for Firebase email actions.");
-  if (configuredOrigin && parsed.origin !== configuredOrigin.replace(/\/$/, "")) throw new FirebaseAuthConfigurationError("The requested email-action origin is not approved.");
+  if (configuredOrigin && requested.origin !== parsed.origin) throw new FirebaseAuthConfigurationError("The requested email-action origin is not approved.");
   return `${parsed.origin}/signin`;
 }
 
@@ -39,7 +44,15 @@ async function requestIdentityToolkit<T>(action: string, payload: Record<string,
   if (["EMAIL_NOT_FOUND", "INVALID_PASSWORD", "INVALID_LOGIN_CREDENTIALS", "INVALID_EMAIL"].some(value => code.includes(value))) {
     throw new FirebaseAuthCredentialsError("Email or password is incorrect.");
   }
-  throw new Error(`Firebase Authentication request failed (${code}).`);
+  throw new FirebaseAuthRequestError(code);
+}
+
+function canFallbackToFirebaseDefaultActionHandler(error: unknown) {
+  return error instanceof FirebaseAuthRequestError && ["UNAUTHORIZED_DOMAIN", "INVALID_CONTINUE_URI", "DYNAMIC_LINK_NOT_ACTIVATED"].some(code => error.code.includes(code));
+}
+
+export function isFirebaseEmailActionRateLimited(error: unknown) {
+  return error instanceof FirebaseAuthRequestError && error.code.includes("TOO_MANY_ATTEMPTS_TRY_LATER");
 }
 
 export function isFirebaseEmailPasswordAuthenticationConfigured() {
@@ -70,7 +83,12 @@ export async function authenticateFirebaseEmailPassword(input: { email: string; 
 }
 
 export async function sendFirebaseVerificationEmail(idToken: string, origin: string) {
-  await requestIdentityToolkit("sendOobCode", { requestType: "VERIFY_EMAIL", idToken, continueUrl: approvedContinueUrl(origin) });
+  try {
+    await requestIdentityToolkit("sendOobCode", { requestType: "VERIFY_EMAIL", idToken, continueUrl: approvedContinueUrl(origin) });
+  } catch (error) {
+    if (!canFallbackToFirebaseDefaultActionHandler(error)) throw error;
+    await requestIdentityToolkit("sendOobCode", { requestType: "VERIFY_EMAIL", idToken });
+  }
   return { mode: "sent" as const };
 }
 
@@ -86,7 +104,7 @@ export async function resendFirebaseVerificationEmail(email: string, origin: str
   if (user.emailVerified) return { mode: "sent" as const };
   const customToken = await getFirebaseAuth().createCustomToken(user.uid);
   const session = await requestIdentityToolkit<FirebaseSignInResponse>("signInWithCustomToken", { token: customToken, returnSecureToken: true });
-  if (!session.idToken || !session.localId || session.localId !== user.uid) throw new Error("Firebase Authentication did not return a valid verification session.");
+  if (!session.idToken) throw new Error("Firebase Authentication did not return a valid verification session.");
   const claims = await getFirebaseAuth().verifyIdToken(session.idToken);
   if (claims.uid !== user.uid) throw new Error("Firebase Authentication returned an inconsistent verification identity.");
   return sendFirebaseVerificationEmail(session.idToken, origin);
@@ -94,7 +112,12 @@ export async function resendFirebaseVerificationEmail(email: string, origin: str
 
 export async function sendFirebasePasswordResetEmail(email: string, origin: string) {
   try {
-    await requestIdentityToolkit("sendOobCode", { requestType: "PASSWORD_RESET", email, continueUrl: approvedContinueUrl(origin) });
+    try {
+      await requestIdentityToolkit("sendOobCode", { requestType: "PASSWORD_RESET", email, continueUrl: approvedContinueUrl(origin) });
+    } catch (error) {
+      if (!canFallbackToFirebaseDefaultActionHandler(error)) throw error;
+      await requestIdentityToolkit("sendOobCode", { requestType: "PASSWORD_RESET", email });
+    }
   } catch (error) {
     if (!(error instanceof FirebaseAuthCredentialsError)) throw error;
   }

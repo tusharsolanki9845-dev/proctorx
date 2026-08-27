@@ -13,6 +13,7 @@ import {
   createFirebaseEmailPasswordUser,
   deleteFirebaseEmailPasswordUser,
   FirebaseAuthCredentialsError,
+  isFirebaseEmailActionRateLimited,
   isFirebaseEmailPasswordAuthenticationConfigured,
   resendFirebaseVerificationEmail,
   sendFirebasePasswordResetEmail,
@@ -69,6 +70,11 @@ function firebaseAuthFailure(error: unknown) {
   return error;
 }
 
+function firebaseEmailActionFailureCode(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  return message.match(/\(([A-Z0-9_]+)\)\.?$/)?.[1] ?? "UNKNOWN";
+}
+
 const examInputSchema = z
   .object({
     title: z.string().trim().min(3).max(255),
@@ -102,7 +108,14 @@ export const proctorxRouter = router({
             const user = await db.createFirebaseStudent({ ...input, email, firebaseUid: firebaseUser.uid, openId: `firebase:${firebaseUser.uid}` });
             proctorxUserCreated = true;
             const firebaseSession = await authenticateFirebaseEmailPassword({ email, password: input.password });
-            const verificationDelivery = await sendFirebaseVerificationEmail(firebaseSession.idToken, input.origin);
+            let verificationDelivery: { mode: "sent" | "retry_later" | "configuration_required" };
+            try {
+              verificationDelivery = await sendFirebaseVerificationEmail(firebaseSession.idToken, input.origin);
+            } catch (error) {
+              const rateLimited = isFirebaseEmailActionRateLimited(error);
+              console.error(`[Firebase Auth] Candidate verification email action failed with ${firebaseEmailActionFailureCode(error)}.`);
+              verificationDelivery = { mode: rateLimited ? "retry_later" : "configuration_required" };
+            }
             return { id: user.id, verificationDelivery };
           } catch (error) {
             if (firebaseUser && !proctorxUserCreated) await deleteFirebaseEmailPasswordUser(firebaseUser.uid).catch(() => undefined);
@@ -155,8 +168,10 @@ export const proctorxRouter = router({
         if (isFirebaseEmailPasswordAuthenticationConfigured()) {
           try {
             return { accepted: true as const, delivery: await resendFirebaseVerificationEmail(input.email.toLowerCase(), input.origin) };
-          } catch {
-            return { accepted: true as const, delivery: { mode: "configuration_required" as const } };
+          } catch (error) {
+            const rateLimited = isFirebaseEmailActionRateLimited(error);
+            console.error(`[Firebase Auth] Verification resend failed with ${firebaseEmailActionFailureCode(error)}.`);
+            return { accepted: true as const, delivery: { mode: rateLimited ? "retry_later" as const : "configuration_required" as const } };
           }
         }
         const account = await db.findLocalAccountByEmail(input.email.toLowerCase());
@@ -178,8 +193,10 @@ export const proctorxRouter = router({
         if (isFirebaseEmailPasswordAuthenticationConfigured()) {
           try {
             return { accepted: true as const, delivery: await sendFirebasePasswordResetEmail(input.email.toLowerCase(), input.origin) };
-          } catch {
-            return { accepted: true as const, delivery: { mode: "sent" as const } };
+          } catch (error) {
+            const rateLimited = isFirebaseEmailActionRateLimited(error);
+            console.error(`[Firebase Auth] Password reset email action failed with ${firebaseEmailActionFailureCode(error)}.`);
+            return { accepted: true as const, delivery: { mode: rateLimited ? "retry_later" as const : "sent" as const } };
           }
         }
         const account = await db.findLocalAccountByEmail(input.email.toLowerCase());

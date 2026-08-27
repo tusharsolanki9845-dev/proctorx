@@ -8,7 +8,9 @@ vi.mock("./firebaseAdmin", () => ({ getFirebaseAuth, isFirebaseAdminConfigured }
 import {
   authenticateFirebaseEmailPassword,
   isFirebaseEmailPasswordAuthenticationConfigured,
+  isFirebaseEmailActionRateLimited,
   resendFirebaseVerificationEmail,
+  sendFirebaseVerificationEmail,
   sendFirebasePasswordResetEmail,
 } from "./firebaseAuth";
 
@@ -64,7 +66,7 @@ describe("Firebase Email/Password gateway", () => {
     process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ idToken: "verification-id-token", localId: "firebase-user-id" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ idToken: "verification-id-token" }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);
     getFirebaseAuth.mockReturnValue({
@@ -76,5 +78,38 @@ describe("Firebase Email/Password gateway", () => {
     await expect(resendFirebaseVerificationEmail("student@example.test", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
     expect(fetchMock.mock.calls[0]?.[0]).toContain("accounts:signInWithCustomToken?key=test-web-key");
     expect(fetchMock.mock.calls[1]?.[0]).toContain("accounts:sendOobCode?key=test-web-key");
+  });
+
+  it("uses Firebase's default action handler only when the approved continuation domain is rejected", async () => {
+    process.env.FIREBASE_WEB_API_KEY = "test-web-key";
+    process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: { message: "UNAUTHORIZED_DOMAIN" } }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sendFirebaseVerificationEmail("signed-id-token", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({ continueUrl: "https://proctorx-assessment.netlify.app/signin" });
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({ requestType: "VERIFY_EMAIL", idToken: "signed-id-token" });
+  });
+
+  it("rejects a caller-controlled email-action origin before contacting Firebase", async () => {
+    process.env.FIREBASE_WEB_API_KEY = "test-web-key";
+    process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(sendFirebaseVerificationEmail("signed-id-token", "https://unapproved.example")).rejects.toThrow("not approved");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("identifies Firebase's temporary email-action rate limit without treating it as successful delivery", async () => {
+    process.env.FIREBASE_WEB_API_KEY = "test-web-key";
+    process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: { message: "TOO_MANY_ATTEMPTS_TRY_LATER" } }) }));
+
+    const error = await sendFirebaseVerificationEmail("signed-id-token", "https://proctorx-assessment.netlify.app").catch(error => error);
+    expect(isFirebaseEmailActionRateLimited(error)).toBe(true);
   });
 });

@@ -123,3 +123,5 @@
 - [x] Fix Netlify’s Firestore runtime dispatch so configured-administrator creation never falls back to the unavailable relational database.
 - [x] Make Firestore exam/question identifier allocation atomic across each exam write and preserve legacy numeric identifiers for answer, integrity, support, and notification records where client contracts require them.
 - [ ] Complete a Firebase-hosted verification resend route that does not depend on optional third-party mail delivery, then validate signup, verification, sign-in, reset, exam, reporting, support, and notification workflows with a consented test account.
+- [ ] Resolve the observed Firebase verification-email delivery failure for the approved test inbox, validate one controlled delivery after the temporary Firebase rate limit clears, and record the exact evidence without exposing account credentials or email contents.
+- [x] Prepare and provide a sanitized ZIP archive containing only the current ProctorX project source and configuration, excluding credentials, dependencies, build artifacts, logs, and temporary files.
