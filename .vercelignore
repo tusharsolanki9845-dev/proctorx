@@ -2,4 +2,6 @@ android/.gradle
 android/**/build
 dist
 .manus-logs
+.netlify
+netlify
 node_modules
