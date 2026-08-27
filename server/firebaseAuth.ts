@@ -74,8 +74,22 @@ export async function sendFirebaseVerificationEmail(idToken: string, origin: str
   return { mode: "sent" as const };
 }
 
-export async function generateFirebaseVerificationLink(email: string, origin: string) {
-  return getFirebaseAuth().generateEmailVerificationLink(email, { url: approvedContinueUrl(origin), handleCodeInApp: false });
+export async function resendFirebaseVerificationEmail(email: string, origin: string) {
+  let user: { uid: string; emailVerified?: boolean };
+  try {
+    user = await getFirebaseAuth().getUserByEmail(email);
+  } catch (error: unknown) {
+    const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+    if (code.includes("user-not-found")) return { mode: "sent" as const };
+    throw error;
+  }
+  if (user.emailVerified) return { mode: "sent" as const };
+  const customToken = await getFirebaseAuth().createCustomToken(user.uid);
+  const session = await requestIdentityToolkit<FirebaseSignInResponse>("signInWithCustomToken", { token: customToken, returnSecureToken: true });
+  if (!session.idToken || !session.localId || session.localId !== user.uid) throw new Error("Firebase Authentication did not return a valid verification session.");
+  const claims = await getFirebaseAuth().verifyIdToken(session.idToken);
+  if (claims.uid !== user.uid) throw new Error("Firebase Authentication returned an inconsistent verification identity.");
+  return sendFirebaseVerificationEmail(session.idToken, origin);
 }
 
 export async function sendFirebasePasswordResetEmail(email: string, origin: string) {

@@ -1,47 +1,33 @@
 # ProctorX Android Production Release Checklist
 
-## Current Status
+## Current status
 
-The Capacitor Android project has been generated, its camera and microphone permissions are declared, and a debug build completed successfully. It was synchronized on 2026-08-26 against the stable Vercel alias `https://proctorx-web.vercel.app`. The alias is reachable and its public web route plus unauthenticated tRPC route were verified. Production database, session, administrator-credential, and OAuth environment variables remain intentionally unconfigured in Vercel, so the wrapper is **not** ready for distribution or candidate use until those full-stack prerequisites are complete.
+The Capacitor Android project is synchronized against the public Netlify host **`https://proctorx-assessment.netlify.app`**. The Android project declares camera and microphone permissions, the wrapper host was regenerated on 27 August 2026, and the Netlify server-side Firebase readiness boundary has been validated. The wrapper is **not** ready for candidate distribution or APK publication.
 
 | Release gate | Status | Owner |
 |---|---|---|
-| ProctorX application checkpoint | Complete | ProctorX project |
-| Stable Vercel HTTPS alias | Complete for host configuration | Development workflow |
-| Production database, session, credentials, and OAuth configuration | Pending | Project owner |
-| Capacitor sync against `https://proctorx-web.vercel.app` | Complete | Development workflow |
-| Physical Android device permission matrix | Pending | Consenting tester |
+| Public Netlify HTTPS host | Complete | ProctorX project |
+| Server-only Firebase, session, and administrator configuration | Complete | ProctorX project |
+| Capacitor sync against `https://proctorx-assessment.netlify.app` | Complete | Development workflow |
+| Consented candidate/exam workflow validation | Pending | Consenting tester and project owner |
+| Physical Android permission and recovery matrix | Pending | Consenting Android tester |
 | User-owned Android signing key | Required | Project owner |
-| Signed release APK | Pending | Development workflow |
+| Signed release APK and post-install smoke check | Pending | Development workflow |
 
-## 1. Publish the Web Application
+## Required sequence
 
-The stable Vercel alias is `https://proctorx-web.vercel.app`. Do not substitute a temporary preview address, localhost address, or placeholder domain in the Android wrapper. Before release, configure and test the full production service using the environment requirements document; a reachable landing page alone is not sufficient for candidate use.
-
-## 2. Synchronize the Android Wrapper
-
-Set the real domain and synchronize:
+Use only the stable public Netlify hostname; do not substitute a preview URL, localhost address, or a placeholder domain.
 
 ```bash
-export PROCTORX_ANDROID_SERVER_URL="https://proctorx-web.vercel.app"
+export PROCTORX_ANDROID_SERVER_URL="https://proctorx-assessment.netlify.app"
 pnpm android:sync
 pnpm android:open
 ```
 
-Confirm that `android/app/src/main/assets/capacitor.config.json` contains `https://proctorx-web.vercel.app` before installing the app.
+Confirm that `android/app/src/main/assets/capacitor.config.json` contains the same HTTPS origin before installing a debug build on a consenting test device. The tester must control the camera and microphone permission prompts. Record only visible compatibility state and configured integrity metadata; do not retain recordings, voice samples, camera images, or video.
 
-## 3. Run the Consented Physical-Device Matrix
+After the physical matrix passes, the project owner must create and safeguard the Android signing keystore and its passwords. The keystore, alias password, and key password must never be committed or shared in source. Only then may a release APK be built, certificate-verified, installed on the tested device, and checked against the published Netlify domain.
 
-On a real Android device, a consenting tester must perform every row in `ANDROID_CAMERA_MICROPHONE_COMPATIBILITY.md`. The tester controls the system camera and microphone prompts. Record only the displayed compatibility state and configured integrity metadata—never retain audio, voice samples, images, or video.
+## Stop conditions
 
-## 4. Prepare Release Signing
-
-Create and protect an Android signing keystore under the project owner’s control. Do not commit a keystore, alias password, or key password. Provide required values securely only after the physical-device matrix passes.
-
-## 5. Build and Inspect the Release APK
-
-After signing configuration is supplied, create a release build, verify the package identifier and signing certificate, install it on the tested Android device, and repeat a short consented camera/microphone smoke check against the published domain.
-
-## Stop Conditions
-
-Stop the release process if the published domain is unavailable, a permission prompt appears before the candidate action, the compatibility diagnostic reports a missing required API, the app loads a placeholder host, or a tester withdraws consent. Resolve and document the issue before continuing.
+Stop the release if the public host is unavailable, Firebase-backed candidate access fails, a permission prompt appears before a candidate action, the compatibility diagnostic reports a missing API, the wrapper has a non-production host, an unsigned artifact is selected, or the tester withdraws consent. Resolve and document the issue before continuing.

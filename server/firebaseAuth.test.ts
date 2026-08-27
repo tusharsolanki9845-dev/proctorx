@@ -8,6 +8,7 @@ vi.mock("./firebaseAdmin", () => ({ getFirebaseAuth, isFirebaseAdminConfigured }
 import {
   authenticateFirebaseEmailPassword,
   isFirebaseEmailPasswordAuthenticationConfigured,
+  resendFirebaseVerificationEmail,
   sendFirebasePasswordResetEmail,
 } from "./firebaseAuth";
 
@@ -56,5 +57,24 @@ describe("Firebase Email/Password gateway", () => {
     getFirebaseAuth.mockReturnValue({ verifyIdToken: vi.fn().mockResolvedValue({ uid: "firebase-user-id", email_verified: true }) });
 
     await expect(authenticateFirebaseEmailPassword({ email: "student@example.test", password: "safe password" })).resolves.toMatchObject({ uid: "firebase-user-id", emailVerified: true });
+  });
+
+  it("resends Firebase verification using a server-minted custom-token session", async () => {
+    process.env.FIREBASE_WEB_API_KEY = "test-web-key";
+    process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ idToken: "verification-id-token", localId: "firebase-user-id" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    getFirebaseAuth.mockReturnValue({
+      getUserByEmail: vi.fn().mockResolvedValue({ uid: "firebase-user-id", emailVerified: false }),
+      createCustomToken: vi.fn().mockResolvedValue("server-only-custom-token"),
+      verifyIdToken: vi.fn().mockResolvedValue({ uid: "firebase-user-id" }),
+    });
+
+    await expect(resendFirebaseVerificationEmail("student@example.test", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("accounts:signInWithCustomToken?key=test-web-key");
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("accounts:sendOobCode?key=test-web-key");
   });
 });

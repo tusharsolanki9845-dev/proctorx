@@ -13,8 +13,8 @@ import {
   createFirebaseEmailPasswordUser,
   deleteFirebaseEmailPasswordUser,
   FirebaseAuthCredentialsError,
-  generateFirebaseVerificationLink,
   isFirebaseEmailPasswordAuthenticationConfigured,
+  resendFirebaseVerificationEmail,
   sendFirebasePasswordResetEmail,
   sendFirebaseVerificationEmail,
 } from "./firebaseAuth";
@@ -154,15 +154,7 @@ export const proctorxRouter = router({
       .mutation(async ({ input }) => {
         if (isFirebaseEmailPasswordAuthenticationConfigured()) {
           try {
-            const link = await generateFirebaseVerificationLink(input.email.toLowerCase(), input.origin);
-            const delivery = await deliverAccountLink({
-              to: input.email.toLowerCase(),
-              subject: "Verify your ProctorX email",
-              heading: "Verify your account",
-              description: "Confirm your email address to activate your ProctorX student account.",
-              link,
-            });
-            return { accepted: true as const, delivery };
+            return { accepted: true as const, delivery: await resendFirebaseVerificationEmail(input.email.toLowerCase(), input.origin) };
           } catch {
             return { accepted: true as const, delivery: { mode: "configuration_required" as const } };
           }

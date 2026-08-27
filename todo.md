@@ -89,35 +89,37 @@
 - [x] Inspect the requested Ponytail code identifier, determine its intended integration boundary, and implement it only after the project role is unambiguous.
 - [x] Locate the requested Ponytail GitHub repository, review its documentation and license, and assess its compatibility before any download or execution.
 - [x] Inventory eligible current-workspace projects and apply the vetted non-runtime Ponytail development-policy template without third-party hooks or production runtime changes.
-- [ ] Prepare a production Android release checklist and physical-device permission test record for the published ProctorX domain.
+- [x] Prepare a production Android release checklist for the published ProctorX domain.
+- [ ] Record the consented physical-device permission results for the published ProctorX Android wrapper.
 - [x] Configure the Capacitor wrapper with the published ProctorX HTTPS domain after the user publishes the application.
 - [ ] Run consented physical Android camera, microphone, fullscreen, backgrounding, and recovery checks against the published wrapper.
 - [ ] Configure a user-owned Android signing key and generate a signed release APK after device validation passes.
 - [x] Inspect Vercel deployment compatibility for the full-stack ProctorX application, including database, sessions, Socket.IO, and Android-wrapper domain requirements.
-- [ ] Prepare and validate Vercel deployment configuration and required environment values before publishing externally.
-- [ ] Deploy the compatible ProctorX build on Vercel, verify core flows, and update the Android-wrapper release domain documentation.
+- [x] Superseded Vercel deployment configuration and validation with the user-approved public Netlify Functions deployment.
+- [x] Superseded Vercel release-domain work with the public Netlify host and synchronized Capacitor configuration.
 - [x] Add a device-aware website Downloads experience with Android APK release status and desktop/PWA access guidance.
 - [ ] Publish only a validated signed Android APK through the website and provide a non-APK desktop web/PWA route.
 - [x] Replace the persistent Socket.IO transport with a Vercel-compatible real-time design while preserving support-message and administrator-alert authorization.
 - [x] Add a device-aware Downloads page that clearly distinguishes signed Android APK availability from desktop/PWA access.
 - [x] Add a reusable Vercel serverless Express entrypoint, Vite build script, SPA configuration, and source exclusions.
 - [x] Record the exact Vercel environment-variable boundary and Android release gates without committing or exposing values.
-- [ ] Create, deploy, and validate a Vercel-compatible full-stack configuration without exposing existing application secrets.
-- [ ] Assess Firebase Firestore and Firebase Authentication compatibility with the existing MySQL/tRPC ProctorX data model before any provider-level provisioning.
-- [ ] Obtain and present Firebase/Google Cloud project cost and billing requirements before creating production resources.
-- [ ] Provision Firebase resources only after the compatibility and provider-cost gates are satisfied, then integrate them without exposing credentials.
+- [x] Superseded the Vercel-compatible configuration with the public Netlify Functions deployment and server-only Firebase configuration.
+- [x] Assess Firebase Firestore and Firebase Authentication compatibility with the existing MySQL/tRPC ProctorX data model before provider-level provisioning.
+- [x] Obtain and present Firebase/Google Cloud project cost and billing requirements before creating production resources.
+- [x] Provision Firebase resources after the compatibility and no-cost provider gates were satisfied, without exposing credentials.
 - [ ] Complete the production persistence migration using only Firebase Spark-plan Firestore and Firebase Email/Password; do not enable Blaze billing, Firebase SQL Connect, Cloud SQL, or any paid service.
 - [x] Configure the approved Firebase production data service in an India location suitable for nationwide examination delivery, with locked production access rules.
 - [x] Define a reviewed Firestore document model and server-only authorization boundary that preserves ProctorX’s relational exam, attempt, audit, report, support, and notification semantics.
-- [ ] Replace the Vercel production persistence path with a Firebase Admin-backed Firestore adapter while retaining testable local compatibility until every supported workflow is migrated.
-- [ ] Integrate Firebase Authentication only after mapping the existing role, local-session, verification, reset, and administrator-access controls without weakening authorization.
+- [x] Implement the Firebase Admin-backed Firestore adapter for the Netlify production path while retaining local relational compatibility for tests and development.
+- [ ] Complete Firebase Authentication with reliable verification resend, role mapping, server-issued sessions, reset actions, administrator-access isolation, and production-safe end-to-end validation.
 - [x] Fix Vercel SPA routing so `/api/trpc/*` reaches the serverless Express function instead of the client-side 404 route.
 - [x] Diagnose and resolve the Vercel serverless function crash for the public tRPC route without exposing secrets.
 - [x] Resolve the Firebase Admin serverless ESM compatibility crash by pinning a verified Firebase Admin dependency line and revalidating the Vercel bundle.
 - [x] Assess Netlify free-plan compatibility for the Firebase Admin-backed ProctorX API, secure sessions, and nationwide India delivery requirements.
 - [x] Retire the remaining Vercel-specific deployment artifacts and rewrite production deployment documentation around the validated Netlify Functions configuration.
 - [ ] Configure Netlify Production secrets securely and validate Firebase server-only readiness, student and administrator access, exam persistence, reports, support polling, and notification polling.
-- [ ] Deploy the validated Netlify production build, update the Capacitor host configuration, and retain the signed-APK release gates.
+- [x] Deploy the validated Netlify production build, update the Capacitor host configuration, and retain the signed-APK release gates.
 - [x] Fix the live Netlify `/api/*` route so requests reach the Express/tRPC Function instead of the SPA fallback.
 - [x] Fix Netlify’s Firestore runtime dispatch so configured-administrator creation never falls back to the unavailable relational database.
 - [x] Make Firestore exam/question identifier allocation atomic across each exam write and preserve legacy numeric identifiers for answer, integrity, support, and notification records where client contracts require them.
+- [ ] Complete a Firebase-hosted verification resend route that does not depend on optional third-party mail delivery, then validate signup, verification, sign-in, reset, exam, reporting, support, and notification workflows with a consented test account.
