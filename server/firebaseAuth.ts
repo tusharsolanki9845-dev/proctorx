@@ -18,9 +18,10 @@ class FirebaseAuthRequestError extends Error {
 }
 
 function getFirebaseWebApiKey() {
-  const key = process.env[FIREBASE_WEB_API_KEY_ENV]?.trim();
-  if (!key) throw new FirebaseAuthConfigurationError(`${FIREBASE_WEB_API_KEY_ENV} is required for Firebase Email/Password authentication.`);
-  return key;
+  const raw = process.env[FIREBASE_WEB_API_KEY_ENV]?.trim();
+  if (!raw) throw new FirebaseAuthConfigurationError(`${FIREBASE_WEB_API_KEY_ENV} is required for Firebase Email/Password authentication.`);
+  const embeddedKey = raw.match(/apiKey\s*:\s*["'](AIza[^"']+)["']/)?.[1];
+  return embeddedKey ?? raw;
 }
 
 function approvedContinueUrl(requestedOrigin: string) {

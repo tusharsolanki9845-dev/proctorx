@@ -41,6 +41,14 @@ describe("Firebase Email/Password gateway", () => {
     expect(isFirebaseEmailPasswordAuthenticationConfigured()).toBe(false);
   });
 
+  it("accepts an authorized copied Firebase SDK configuration snippet without exposing its embedded Web API key", async () => {
+    process.env.FIREBASE_WEB_API_KEY = 'const firebaseConfig = { apiKey: "AIza-test-web-key" };';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+
+    await sendFirebasePasswordResetEmail("student@example.test", "http://localhost:3000");
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("accounts:sendOobCode?key=AIza-test-web-key"), expect.any(Object));
+  });
+
   it("returns a privacy-preserving accepted result when Firebase hides whether a reset email exists", async () => {
     process.env.FIREBASE_WEB_API_KEY = "test-web-key";
     process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
