@@ -1,4 +1,4 @@
-import { getFirebaseAuth, isFirebaseAdminConfigured } from "./firebaseAdmin";
+import { getFirebaseAdminApp, getFirebaseAuth, isFirebaseAdminConfigured } from "./firebaseAdmin";
 
 const FIREBASE_WEB_API_KEY_ENV = "FIREBASE_WEB_API_KEY";
 const IDENTITY_TOOLKIT_URL = "https://identitytoolkit.googleapis.com/v1/accounts";
@@ -30,6 +30,26 @@ function approvedContinueUrl(requestedOrigin: string) {
   if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") throw new FirebaseAuthConfigurationError("A secure public ProctorX origin is required for Firebase email actions.");
   if (configuredOrigin && requested.origin !== parsed.origin) throw new FirebaseAuthConfigurationError("The requested email-action origin is not approved.");
   return `${parsed.origin}/signin`;
+}
+
+async function requestIdentityToolkitWithAdminAuth<T>(action: string, payload: Record<string, unknown>): Promise<T> {
+  const app = getFirebaseAdminApp();
+  const credential = app.options.credential;
+  const projectId = app.options.projectId;
+  if (!credential || !projectId) throw new FirebaseAuthConfigurationError("Firebase Admin OAuth configuration is incomplete.");
+  const token = await credential.getAccessToken();
+  const response = await fetch(`${IDENTITY_TOOLKIT_URL}:${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token.access_token}` },
+    body: JSON.stringify({ ...payload, targetProjectId: projectId }),
+  });
+  if (response.ok) return response.json() as Promise<T>;
+  const detail = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+  const code = detail?.error?.message ?? "UNKNOWN";
+  if (["EMAIL_NOT_FOUND", "INVALID_PASSWORD", "INVALID_LOGIN_CREDENTIALS", "INVALID_EMAIL"].some(value => code.includes(value))) {
+    throw new FirebaseAuthCredentialsError("Email or password is incorrect.");
+  }
+  throw new FirebaseAuthRequestError(code);
 }
 
 async function requestIdentityToolkit<T>(action: string, payload: Record<string, unknown>): Promise<T> {
@@ -84,10 +104,10 @@ export async function authenticateFirebaseEmailPassword(input: { email: string; 
 
 export async function sendFirebaseVerificationEmail(idToken: string, origin: string) {
   try {
-    await requestIdentityToolkit("sendOobCode", { requestType: "VERIFY_EMAIL", idToken, continueUrl: approvedContinueUrl(origin) });
+    await requestIdentityToolkitWithAdminAuth("sendOobCode", { requestType: "VERIFY_EMAIL", idToken, continueUrl: approvedContinueUrl(origin) });
   } catch (error) {
     if (!canFallbackToFirebaseDefaultActionHandler(error)) throw error;
-    await requestIdentityToolkit("sendOobCode", { requestType: "VERIFY_EMAIL", idToken });
+    await requestIdentityToolkitWithAdminAuth("sendOobCode", { requestType: "VERIFY_EMAIL", idToken });
   }
   return { mode: "sent" as const };
 }
@@ -113,10 +133,10 @@ export async function resendFirebaseVerificationEmail(email: string, origin: str
 export async function sendFirebasePasswordResetEmail(email: string, origin: string) {
   try {
     try {
-      await requestIdentityToolkit("sendOobCode", { requestType: "PASSWORD_RESET", email, continueUrl: approvedContinueUrl(origin) });
+      await requestIdentityToolkitWithAdminAuth("sendOobCode", { requestType: "PASSWORD_RESET", email, continueUrl: approvedContinueUrl(origin) });
     } catch (error) {
       if (!canFallbackToFirebaseDefaultActionHandler(error)) throw error;
-      await requestIdentityToolkit("sendOobCode", { requestType: "PASSWORD_RESET", email });
+      await requestIdentityToolkitWithAdminAuth("sendOobCode", { requestType: "PASSWORD_RESET", email });
     }
   } catch (error) {
     if (!(error instanceof FirebaseAuthCredentialsError)) throw error;

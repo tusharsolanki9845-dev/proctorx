@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const getFirebaseAuth = vi.hoisted(() => vi.fn());
 const isFirebaseAdminConfigured = vi.hoisted(() => vi.fn());
+const getFirebaseAdminApp = vi.hoisted(() => vi.fn());
 
-vi.mock("./firebaseAdmin", () => ({ getFirebaseAuth, isFirebaseAdminConfigured }));
+vi.mock("./firebaseAdmin", () => ({ getFirebaseAuth, getFirebaseAdminApp, isFirebaseAdminConfigured }));
 
 import {
   authenticateFirebaseEmailPassword,
@@ -24,6 +25,7 @@ describe("Firebase Email/Password gateway", () => {
     delete process.env.DATABASE_URL;
     delete process.env.PROCTORX_PUBLIC_ORIGIN;
     isFirebaseAdminConfigured.mockReturnValue(false);
+    getFirebaseAdminApp.mockReturnValue({ options: { projectId: "test-project", credential: { getAccessToken: vi.fn().mockResolvedValue({ access_token: "test-oauth-token" }) } } });
   });
 
   afterEach(() => {
@@ -48,8 +50,8 @@ describe("Firebase Email/Password gateway", () => {
 
     await expect(sendFirebasePasswordResetEmail("unknown@example.test", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("accounts:sendOobCode?key=test-web-key"),
-      expect.objectContaining({ method: "POST" })
+      expect.stringContaining("accounts:sendOobCode"),
+      expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer test-oauth-token" }) })
     );
   });
 
@@ -77,7 +79,8 @@ describe("Firebase Email/Password gateway", () => {
 
     await expect(resendFirebaseVerificationEmail("student@example.test", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
     expect(fetchMock.mock.calls[0]?.[0]).toContain("accounts:signInWithCustomToken?key=test-web-key");
-    expect(fetchMock.mock.calls[1]?.[0]).toContain("accounts:sendOobCode?key=test-web-key");
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("accounts:sendOobCode");
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: "Bearer test-oauth-token" });
   });
 
   it("uses Firebase's default action handler only when the approved continuation domain is rejected", async () => {
@@ -91,7 +94,7 @@ describe("Firebase Email/Password gateway", () => {
 
     await expect(sendFirebaseVerificationEmail("signed-id-token", "https://proctorx-assessment.netlify.app")).resolves.toEqual({ mode: "sent" });
     expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toMatchObject({ continueUrl: "https://proctorx-assessment.netlify.app/signin" });
-    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({ requestType: "VERIFY_EMAIL", idToken: "signed-id-token" });
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({ requestType: "VERIFY_EMAIL", idToken: "signed-id-token", targetProjectId: "test-project" });
   });
 
   it("rejects a caller-controlled email-action origin before contacting Firebase", async () => {

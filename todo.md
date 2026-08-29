@@ -125,3 +125,5 @@
 - [ ] Complete a Firebase-hosted verification resend route that does not depend on optional third-party mail delivery, then validate signup, verification, sign-in, reset, exam, reporting, support, and notification workflows with a consented test account.
 - [ ] Resolve the observed Firebase verification-email delivery failure for the approved test inbox, validate one controlled delivery after the temporary Firebase rate limit clears, and record the exact evidence without exposing account credentials or email contents.
 - [x] Prepare and provide a sanitized ZIP archive containing only the current ProctorX project source and configuration, excluding credentials, dependencies, build artifacts, logs, and temporary files.
+- [ ] Continue the fastest safe Vercel configuration recovery after the browser and credential-transfer interruption, without enabling billing or exposing secrets.
+- [ ] Resume and finish Vercel/Firebase production validation from the restored checkpoint, preserving server-only secrets and Android release gates.
