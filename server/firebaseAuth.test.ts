@@ -8,6 +8,7 @@ vi.mock("./firebaseAdmin", () => ({ getFirebaseAuth, getFirebaseAdminApp, isFire
 
 import {
   authenticateFirebaseEmailPassword,
+  firebaseAuthRequestErrorCode,
   isFirebaseEmailPasswordAuthenticationConfigured,
   isFirebaseEmailActionRateLimited,
   resendFirebaseVerificationEmail,
@@ -40,6 +41,14 @@ describe("Firebase Email/Password gateway", () => {
     expect(isFirebaseEmailPasswordAuthenticationConfigured()).toBe(true);
     process.env.DATABASE_URL = "mysql://legacy";
     expect(isFirebaseEmailPasswordAuthenticationConfigured()).toBe(false);
+  });
+
+  it("accepts an authorized copied Firebase SDK configuration snippet without exposing its embedded Web API key", async () => {
+    process.env.FIREBASE_WEB_API_KEY = 'const firebaseConfig = { apiKey: "AIza-test-web-key" };';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+
+    await sendFirebasePasswordResetEmail("student@example.test", "http://localhost:3000");
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("accounts:sendOobCode?key=AIza-test-web-key"), expect.any(Object));
   });
 
   it("returns a privacy-preserving accepted result when Firebase hides whether a reset email exists", async () => {
@@ -114,5 +123,14 @@ describe("Firebase Email/Password gateway", () => {
 
     const error = await sendFirebaseVerificationEmail("signed-id-token", "https://proctorx-assessment.netlify.app").catch(error => error);
     expect(isFirebaseEmailActionRateLimited(error)).toBe(true);
+  });
+
+  it("exposes only Firebase's sanitized REST error code for server diagnostics", async () => {
+    process.env.FIREBASE_WEB_API_KEY = "test-web-key";
+    process.env.PROCTORX_PUBLIC_ORIGIN = "https://proctorx-assessment.netlify.app";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: { message: "API_KEY_INVALID" } }) }));
+
+    const error = await sendFirebaseVerificationEmail("signed-id-token", "https://proctorx-assessment.netlify.app").catch(error => error);
+    expect(firebaseAuthRequestErrorCode(error)).toBe("API_KEY_INVALID");
   });
 });
