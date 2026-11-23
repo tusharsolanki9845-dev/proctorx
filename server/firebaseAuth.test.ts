@@ -48,7 +48,13 @@ describe("Firebase Email/Password gateway", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
 
     await sendFirebasePasswordResetEmail("student@example.test", "http://localhost:3000");
-    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("accounts:sendOobCode?key=AIza-test-web-key"), expect.any(Object));
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("accounts:sendOobCode"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer test-oauth-token" }),
+        body: expect.stringContaining('"targetProjectId":"test-project"')
+      })
+    );
   });
 
   it("returns a privacy-preserving accepted result when Firebase hides whether a reset email exists", async () => {
