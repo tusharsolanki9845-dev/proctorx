@@ -21,4 +21,8 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
-      - run: pnpm android:verify
+      - name: Verify Android wrapper when deployment URL is configured
+        if: ${{ vars.PROCTORX_ANDROID_SERVER_URL != '' }}
+        env:
+          PROCTORX_ANDROID_SERVER_URL: ${{ vars.PROCTORX_ANDROID_SERVER_URL }}
+        run: pnpm android:verify
