@@ -40,7 +40,12 @@ function createContext(role: "user" | "admin" | null = null, userId = 7): { ctx:
 }
 
 describe("credential procedures", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("JWT_SECRET", "ci-only-local-session-secret-not-for-production");
+    vi.stubEnv("ADMIN_LOGIN_ID", "ci-admin");
+    vi.stubEnv("ADMIN_LOGIN_PASSWORD", "ci-only-admin-password");
+  });
 
   it("issues a local session when student credentials are valid and rejects an incorrect password", async () => {
     const passwordHash = hashPassword("StudentPass!42");

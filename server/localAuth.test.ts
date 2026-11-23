@@ -1,14 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { hashPassword, verifyConfiguredAdminCredentials, verifyPassword } from "./localAuth";
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("configured administrator credentials", () => {
-  it("accepts the protected configured login and rejects an incorrect password", () => {
-    const loginId = process.env.ADMIN_LOGIN_ID;
-    const password = process.env.ADMIN_LOGIN_PASSWORD;
-    expect(loginId).toBeTruthy();
-    expect(password).toBeTruthy();
-    expect(verifyConfiguredAdminCredentials(loginId!, password!)).toBe(true);
-    expect(verifyConfiguredAdminCredentials(loginId!, `${password!}-incorrect`)).toBe(false);
+  it("accepts the configured login and rejects an incorrect password without production secrets", () => {
+    vi.stubEnv("ADMIN_LOGIN_ID", "ci-admin");
+    vi.stubEnv("ADMIN_LOGIN_PASSWORD", "ci-only-password");
+    expect(verifyConfiguredAdminCredentials("ci-admin", "ci-only-password")).toBe(true);
+    expect(verifyConfiguredAdminCredentials("ci-admin", "ci-only-password-incorrect")).toBe(false);
   });
 });
 

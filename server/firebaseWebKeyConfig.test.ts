@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-describe("configured Firebase Web API key", () => {
-  it("is accepted by the non-mutating Identity Toolkit endpoint", async () => {
-    const apiKey = process.env.FIREBASE_WEB_API_KEY?.trim();
-    expect(apiKey).toBeTruthy();
+const apiKey = process.env.FIREBASE_WEB_API_KEY?.trim();
 
+describe("configured Firebase Web API key", () => {
+  it.skipIf(!apiKey)("is accepted by the non-mutating Identity Toolkit endpoint when a CI integration key is configured", async () => {
     const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey!)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

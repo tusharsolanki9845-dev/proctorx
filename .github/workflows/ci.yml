@@ -1,0 +1,28 @@
+name: ProctorX CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm test
+      - run: pnpm build
+      - name: Verify Android wrapper when deployment URL is configured
+        if: ${{ vars.PROCTORX_ANDROID_SERVER_URL != '' }}
+        env:
+          PROCTORX_ANDROID_SERVER_URL: ${{ vars.PROCTORX_ANDROID_SERVER_URL }}
+        run: pnpm android:verify

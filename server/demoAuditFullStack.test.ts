@@ -27,7 +27,7 @@ afterAll(async () => {
 });
 
 describe("full-stack Integrity Foundations Demo audit", () => {
-  it("detects five cheating signals, persists the review timeline, auto-submits, and exposes the high-risk alert only to the administrator", async () => {
+  it.skipIf(!process.env.DATABASE_URL)("detects five cheating signals, persists the review timeline, auto-submits, and exposes the high-risk alert only to the administrator", async () => {
     const database = await getDb();
     if (!database) throw new Error("The audit database is unavailable.");
     const [admin] = await database.insert(users).values({ openId: `full-audit-admin:${suffix}`, name: "Audit Administrator", email: `full-admin-${suffix}@example.test`, loginMethod: "audit", role: "admin" }).$returningId();

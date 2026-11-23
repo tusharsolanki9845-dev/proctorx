@@ -24,7 +24,7 @@ afterAll(async () => {
 });
 
 describe("storage-backed Integrity Foundations Demo audit", () => {
-  it("persists all cheating signals, auto-submits the demo attempt, and exposes alert/review data only to authorized roles", async () => {
+  it.skipIf(!process.env.DATABASE_URL)("persists all cheating signals, auto-submits the demo attempt, and exposes alert/review data only to authorized roles", async () => {
     const database = await getDb();
     if (!database) throw new Error("The audit database is unavailable.");
     const [admin] = await database.insert(users).values({ openId: `audit-admin:${suffix}`, name: "Audit Administrator", email: `audit-admin-${suffix}@example.test`, loginMethod: "audit", role: "admin" }).$returningId();
